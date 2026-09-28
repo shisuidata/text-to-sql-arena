@@ -118,14 +118,14 @@ pnpm dev
 
 执行 `pnpm check && pnpm build && pnpm verify:build` 会生成公开边界内的正文与证据页面并检查内部链接。该命令只构建本地静态产物，不部署站点。
 
-Cloudflare Pages 项目 `text-to-sql-arena-git` 使用原生 Git 集成，生产域名为 `arena.ss-data.cc`。GitHub 仓库现为 `shisuidata/text-to-sql-arena`。已核实生产站点可访问、项目仍为 Git Provider、最近生产部署的提交与当前 `main` HEAD 一致；仓库转移后下一次推送能否自动触发尚未实测。请在 Pages 项目的 Git 集成设置中核对源仓库及组织授权，必要时重新连接，并以一次新的 `main` 部署验证触发链路。
+Cloudflare Pages 项目 `text-to-sql-arena-git` 使用原生 Git 集成，生产域名为 `arena.ss-data.cc`，GitHub 仓库现为 `shisuidata/text-to-sql-arena`。仓库转移后，`main` 已成功推送且 GitHub CI 通过，但 Pages 未生成新部署，线上仍为转移前的提交；组织的 GitHub App 安装列表也没有 Cloudflare。须在 GitHub 为组织仓库授权 Cloudflare Workers & Pages 应用，并在 Pages 项目的 Git 集成设置中核对或重新连接源仓库，再用新提交验证自动触发。仅手动上传站点不能修复这一链路。
 
 - Git 集成正常时，`main` 的推送由 Cloudflare 自动克隆源码、检查、构建和部署；其他分支生成预览部署，不覆盖生产。
 - Cloudflare 构建根目录为 `site`，输出目录为 `dist`，使用 v3 构建镜像。构建命令为 `pnpm install --frozen-lockfile && pnpm check && pnpm build && pnpm verify:build`；任一步骤失败都不会发布该次产物。
 - 生产与预览的构建变量均在 Cloudflare 项目设置中维护：`NODE_VERSION=22`、`PNPM_VERSION=10.15.1`、`SKIP_DEPENDENCY_INSTALL=true`、`SITE_URL=https://arena.ss-data.cc`、`SITE_BASE=/`。跳过默认依赖安装，统一由构建命令按锁文件安装。
 - `.github/workflows/docs.yml` 仅保留站点 CI 检查，不再上传或部署；GitHub Actions 不需要 Cloudflare 部署密钥。旧的 `site/wrangler.toml` 已移除，避免覆盖控制台中的构建变量。
 - 旧 Direct Upload 项目 `text-to-sql-arena` 仅保留历史部署，不再绑定生产域名，也不再接收 Actions 发布。
-- 明确选中并提交到 `main` 的公开证据会自动上线；本地 `var/`、数据库和未导出的运行不参与站点构建，不会因为 Git 自动部署而公开。
+- 自动部署恢复后，明确选中并提交到 `main` 的公开证据才会随构建上线；当前推送不会自动更新站点。本地 `var/`、数据库和未导出的运行不参与站点构建。
 
 ## 公开证据
 
