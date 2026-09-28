@@ -5,8 +5,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from backend.app.domain import BenchmarkCaseDefinition, SemanticLayer
-
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid", from_attributes=True)
@@ -29,23 +27,44 @@ class TokenPricing(ApiModel):
     effective_at: str
 
 
+class PiCatalogModel(ApiModel):
+    provider: str
+    model_id: str
+    name: str
+    api: str
+    base_url: str
+    context_window: int
+    max_tokens: int
+    reasoning_levels: list[str]
+    auth_modes: list[Literal["api_key", "oauth"]]
+    supported: bool
+    unavailable_reason: str | None
+    definition: dict[str, Any] | None = None
+
+
+class PiCatalogOut(ApiModel):
+    version: str
+    models: list[PiCatalogModel]
+
+
+class PiCredentialEntry(ApiModel):
+    provider: str
+    types: list[Literal["api_key", "oauth"]]
+
+
+class PiCredentialsOut(ApiModel):
+    providers: list[PiCredentialEntry]
+
+
 class ModelProfileCreate(ApiModel):
     name: str
     adapter_kind: Literal["pi"]
     model_id: str
     base_url: str | None = None
     response_mode: Literal["text"] = "text"
-    api_key: str | None = None
-    api_key_env: str | None = None
     parameters: dict[str, Any] = Field(default_factory=dict)
     pricing: TokenPricing | None = None
     enabled: bool = True
-
-    @model_validator(mode="after")
-    def one_secret_source(self) -> ModelProfileCreate:
-        if self.api_key and self.api_key_env:
-            raise ValueError("api_key and api_key_env are mutually exclusive")
-        return self
 
 
 class ModelProfilePatch(ApiModel):
@@ -53,8 +72,6 @@ class ModelProfilePatch(ApiModel):
     model_id: str | None = None
     base_url: str | None = None
     response_mode: Literal["json_schema", "json_object", "text"] | None = None
-    api_key: str | None = None
-    api_key_env: str | None = None
     parameters: dict[str, Any] | None = None
     pricing: TokenPricing | None = None
     enabled: bool | None = None
@@ -71,38 +88,13 @@ class ModelProfileOut(ApiModel):
     pricing: TokenPricing | None
     enabled: bool
     has_secret: bool
-    secret_backend: Literal["keyring", "environment", "none"]
+    secret_backend: Literal["keyring", "environment", "pi", "none"]
     health_status: str
     health_details: dict[str, Any]
     last_checked_at: datetime | None
     health_expires_at: datetime | None
     created_at: datetime
     updated_at: datetime
-
-
-class SuiteDraftCreate(ApiModel):
-    name: str
-    description: str = ""
-    dialect: Literal["duckdb"] = "duckdb"
-    schema_sql: str
-    seed_sql: str
-    semantic: SemanticLayer
-    prompt_template: str
-    cases: list[BenchmarkCaseDefinition]
-
-
-class SuiteDraftPatch(ApiModel):
-    schema_sql: str | None = None
-    seed_sql: str | None = None
-    semantic: SemanticLayer | None = None
-    prompt_template: str | None = None
-    cases: list[BenchmarkCaseDefinition] | None = None
-
-
-class PublishOut(ApiModel):
-    suite_version_id: int
-    content_hash: str
-    manifest: dict[str, Any]
 
 
 class RunCreate(ApiModel):
@@ -127,22 +119,6 @@ class RunCreated(ApiModel):
 class PublicationExportRequest(ApiModel):
     preview_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
 
-
-class ChallengeVariantIn(ApiModel):
-    name: str = Field(min_length=1, max_length=100)
-    seed_sql: str = Field(min_length=1, max_length=200_000)
-
-
-class ChallengeCandidateIn(ApiModel):
-    name: str = Field(min_length=1, max_length=100)
-    sql: str = Field(min_length=1, max_length=100_000)
-    expected: Literal["correct", "incorrect"]
-
-
-class ChallengeCheckRequest(ApiModel):
-    case_key: str = Field(min_length=1, max_length=120)
-    variants: list[ChallengeVariantIn] = Field(min_length=1, max_length=10)
-    candidates: list[ChallengeCandidateIn] = Field(min_length=1, max_length=20)
 
 class EventOut(ApiModel):
     seq: int

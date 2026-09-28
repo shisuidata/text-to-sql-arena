@@ -6,7 +6,6 @@ const RunNewPage = lazy(() => import("./pages/RunNewPage").then((module) => ({ d
 const RunLivePage = lazy(() => import("./pages/RunLivePage").then((module) => ({ default: module.RunLivePage })));
 const ReportPage = lazy(() => import("./pages/ReportPage").then((module) => ({ default: module.ReportPage })));
 const BenchmarksPage = lazy(() => import("./pages/BenchmarksPage").then((module) => ({ default: module.BenchmarksPage })));
-const BenchmarkEditPage = lazy(() => import("./pages/BenchmarkEditPage").then((module) => ({ default: module.BenchmarkEditPage })));
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 
 class RouteErrorBoundary extends Component<PropsWithChildren, { error: Error | null }> {
@@ -20,5 +19,5 @@ class RouteErrorBoundary extends Component<PropsWithChildren, { error: Error | n
 
 export default function App() {
   const location = useLocation();
-  return <AppShell><RouteErrorBoundary key={location.pathname}><Suspense fallback={<div className="loading-screen">正在加载本地评测台…</div>}><Routes><Route path="/" element={<Navigate to="/runs/new" replace/>}/><Route path="/runs/new" element={<RunNewPage/>}/><Route path="/runs/:id/live" element={<RunLivePage/>}/><Route path="/runs/:id/report" element={<ReportPage/>}/><Route path="/benchmarks" element={<BenchmarksPage/>}/><Route path="/benchmarks/:id/edit" element={<BenchmarkEditPage/>}/><Route path="/models" element={<ModelsPage/>}/><Route path="*" element={<Navigate to="/runs/new" replace/>}/></Routes></Suspense></RouteErrorBoundary></AppShell>;
+  return <AppShell><RouteErrorBoundary key={location.pathname}><Suspense fallback={<div className="loading-screen">正在加载本地评测台…</div>}><Routes><Route path="/" element={<Navigate to="/runs/new" replace/>}/><Route path="/runs/new" element={<RunNewPage/>}/><Route path="/runs/:id/live" element={<RunLivePage/>}/><Route path="/runs/:id/report" element={<ReportPage/>}/><Route path="/benchmarks" element={<BenchmarksPage/>}/><Route path="/models" element={<ModelsPage/>}/><Route path="*" element={<Navigate to="/runs/new" replace/>}/></Routes></Suspense></RouteErrorBoundary></AppShell>;
 }

@@ -12,34 +12,35 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import TypeAdapter
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from backend.app.adapters.pi import validate_parameters
+from backend.app.adapters.base import AdapterError
+from backend.app.adapters.pi import (
+    get_pi_catalog,
+    list_pi_credentials,
+    pi_credential_reference,
+    validate_parameters,
+)
 from backend.app.api.schemas import (
-    ChallengeCheckRequest,
     ModelProfileCreate,
     ModelProfileOut,
     ModelProfilePatch,
+    PiCatalogOut,
+    PiCredentialsOut,
     PublicationExportRequest,
-    PublishOut,
     RunCreate,
     RunCreated,
-    SuiteDraftCreate,
-    SuiteDraftPatch,
 )
 from backend.app.config import settings
 from backend.app.db import SessionLocal, get_session
 from backend.app.domain import (
     AstRule,
     BenchmarkCaseDefinition,
-    ChallengeCandidate,
-    ChallengeVariant,
     ComparisonConfig,
     SemanticLayer,
     StructureSnapshot,
-    SuiteSource,
 )
 from backend.app.middleware import bootstrap_payload
 from backend.app.models import (
@@ -52,32 +53,24 @@ from backend.app.models import (
     RunEvent,
     SuiteVersion,
 )
-from backend.app.security import secret_store
 from backend.app.services.benchmark_engine import benchmark_engine
 from backend.app.services.events import event_hub, event_writer
 from backend.app.services.evidence import (
     build_publication_preview,
     export_run_evidence_zip,
-    suite_source_from_models,
 )
 from backend.app.services.profiles import (
     check_profile,
     health_is_current,
     profile_public,
-    secret_reference,
 )
-from backend.app.services.quality import run_challenge_check
 from backend.app.services.reporting import (
     EvidenceLookupError,
     build_case_evidence,
     build_run_report,
     build_run_snapshot,
 )
-from backend.app.services.suites import (
-    SuiteValidationError,
-    build_generation_request,
-    validate_and_build,
-)
+from backend.app.services.suites import build_generation_request
 from backend.app.services.workflows import TERMINAL_RUN_STATUSES, failed_case_keys, preflight_run
 
 router = APIRouter(prefix="/api")
@@ -97,8 +90,20 @@ async def bootstrap(response: Response) -> dict[str, Any]:
         **bootstrap_payload(response),
         "app_version": settings.app_version,
         "scorer_version": settings.scorer_version,
-        "keyring_available": secret_store.available(),
     }
+
+
+@router.get("/pi/credentials", response_model=PiCredentialsOut)
+async def pi_credentials() -> dict[str, Any]:
+    return await list_pi_credentials()
+
+
+@router.get("/pi/catalog", response_model=PiCatalogOut, response_model_exclude_none=True)
+async def pi_catalog() -> dict[str, Any]:
+    try:
+        return await get_pi_catalog()
+    except AdapterError as exc:
+        raise fail(503, exc.code, str(exc), exc.details) from exc
 
 
 @router.get("/model-profiles", response_model=list[ModelProfileOut])
@@ -122,18 +127,19 @@ async def create_model_profile(
 ) -> dict[str, Any]:
     try:
         parameters = validate_parameters(
-            payload.parameters, payload.base_url, payload.response_mode
+            payload.parameters, payload.base_url, payload.response_mode, payload.model_id
         )
     except ValueError as exc:
         raise fail(422, "invalid_pi_parameters", str(exc)) from exc
-    if parameters["auth_mode"] == "oauth" and (payload.api_key or payload.api_key_env):
-        raise fail(422, "invalid_pi_parameters", "订阅 OAuth 不接受 API Key 配置")
     if parameters["auth_mode"] == "oauth" and payload.pricing is not None:
         raise fail(422, "invalid_pi_parameters", "订阅 OAuth 不按 API Token 单价估算账单")
+    reference: str | None
     try:
-        reference = secret_reference(payload.api_key, payload.api_key_env)
-    except (RuntimeError, ValueError) as exc:
-        raise fail(422, "secret_backend_unavailable", str(exc)) from exc
+        reference = await pi_credential_reference(
+            parameters["provider"], payload.model_id, payload.base_url, parameters["auth_mode"]
+        )
+    except AdapterError as exc:
+        raise fail(422, exc.code, str(exc), exc.details) from exc
     profile = ModelProfile(
         name=payload.name,
         adapter_kind=payload.adapter_kind,
@@ -164,8 +170,6 @@ async def patch_model_profile(
         "model_id",
         "base_url",
         "response_mode",
-        "api_key",
-        "api_key_env",
         "parameters",
         "pricing",
     }
@@ -189,25 +193,35 @@ async def patch_model_profile(
         if "response_mode" in payload.model_fields_set
         else profile.response_mode
     )
+    candidate_model_id = (
+        payload.model_id if "model_id" in payload.model_fields_set else profile.model_id
+    )
     candidate_parameters = (
         payload.parameters if "parameters" in payload.model_fields_set else profile.parameters_json
     )
-    if candidate_parameters is None or candidate_response_mode is None:
-        raise fail(422, "invalid_pi_parameters", "parameters 和 response_mode 不能为 null")
+    if (
+        candidate_parameters is None
+        or candidate_response_mode is None
+        or candidate_model_id is None
+    ):
+        raise fail(
+            422, "invalid_pi_parameters", "parameters、response_mode 与 model_id 不能为 null"
+        )
     try:
         normalized_parameters = validate_parameters(
-            candidate_parameters, candidate_base_url, candidate_response_mode
+            candidate_parameters,
+            candidate_base_url,
+            candidate_response_mode,
+            candidate_model_id,
         )
     except ValueError as exc:
         raise fail(422, "invalid_pi_parameters", str(exc)) from exc
-    if normalized_parameters["auth_mode"] == "oauth" and (payload.api_key or payload.api_key_env):
-        raise fail(422, "invalid_pi_parameters", "订阅 OAuth 不接受 API Key 配置")
     candidate_pricing = (
         payload.pricing if "pricing" in payload.model_fields_set else profile.pricing_json
     )
     if normalized_parameters["auth_mode"] == "oauth" and candidate_pricing is not None:
         raise fail(422, "invalid_pi_parameters", "订阅 OAuth 不按 API Token 单价估算账单")
-    updates = payload.model_dump(exclude_unset=True, exclude={"api_key", "api_key_env"})
+    updates = payload.model_dump(exclude_unset=True)
     if "parameters" in updates:
         updates["parameters_json"] = normalized_parameters
         updates.pop("parameters")
@@ -215,17 +229,17 @@ async def patch_model_profile(
         updates["pricing_json"] = updates.pop("pricing")
     for key, value in updates.items():
         setattr(profile, key, value)
-    if payload.api_key is not None or payload.api_key_env is not None:
+    if {"parameters", "model_id", "base_url"} & payload.model_fields_set:
         try:
-            replacement = secret_reference(payload.api_key, payload.api_key_env)
-        except (RuntimeError, ValueError) as exc:
-            raise fail(422, "secret_backend_unavailable", str(exc)) from exc
-        secret_store.delete(profile.api_key_ref)
-        profile.api_key_ref = replacement
+            profile.api_key_ref = await pi_credential_reference(
+                normalized_parameters["provider"],
+                candidate_model_id,
+                candidate_base_url,
+                normalized_parameters["auth_mode"],
+            )
+        except AdapterError as exc:
+            raise fail(422, exc.code, str(exc), exc.details) from exc
     profile.health_status = "unknown"
-    if normalized_parameters["auth_mode"] == "oauth" and profile.api_key_ref:
-        secret_store.delete(profile.api_key_ref)
-        profile.api_key_ref = None
     profile.health_details_json = {}
     profile.health_expires_at = None
     await session.commit()
@@ -241,8 +255,6 @@ async def delete_model_profile(
     profile = await session.get(ModelProfile, profile_id)
     if profile is None or profile.deleted_at is not None:
         raise fail(404, "profile_not_found", "模型配置不存在")
-    secret_store.delete(profile.api_key_ref)
-    profile.api_key_ref = None
     profile.deleted_at = datetime.now(UTC)
     profile.enabled = False
     await session.commit()
@@ -293,34 +305,39 @@ async def list_suites(session: AsyncSession = Depends(get_session)) -> list[dict
             )
         ).all()
     )
-    return [
-        {
-            "id": suite.id,
-            "name": suite.name,
-            "description": suite.description,
-            "versions": [
+    result: list[dict[str, Any]] = []
+    for suite in suites:
+        published_versions = [
+            {
+                "id": version.id,
+                "version": version.version,
+                "status": version.status,
+                "dialect": version.dialect,
+                "content_hash": version.content_hash,
+                "published_at": version.published_at,
+                "schema_sql": version.schema_sql,
+                "seed_sql": version.seed_sql,
+                "semantic": version.semantic_layer_json,
+                "prompt_template": version.prompt_template,
+                "structure": version.structure_snapshot_json,
+                "cases": [
+                    case_to_dict(case, include_reference=True)
+                    for case in sorted(version.cases, key=lambda item: item.sort_order)
+                ],
+            }
+            for version in sorted(suite.versions, key=lambda item: item.version)
+            if version.status == "published"
+        ]
+        if published_versions:
+            result.append(
                 {
-                    "id": version.id,
-                    "version": version.version,
-                    "status": version.status,
-                    "dialect": version.dialect,
-                    "content_hash": version.content_hash,
-                    "published_at": version.published_at,
-                    "schema_sql": version.schema_sql,
-                    "seed_sql": version.seed_sql,
-                    "semantic": version.semantic_layer_json,
-                    "prompt_template": version.prompt_template,
-                    "structure": version.structure_snapshot_json,
-                    "cases": [
-                        case_to_dict(case, include_reference=True)
-                        for case in sorted(version.cases, key=lambda item: item.sort_order)
-                    ],
+                    "id": suite.id,
+                    "name": suite.name,
+                    "description": suite.description,
+                    "versions": published_versions,
                 }
-                for version in sorted(suite.versions, key=lambda item: item.version)
-            ],
-        }
-        for suite in suites
-    ]
+            )
+    return result
 
 
 @router.get("/suite-versions/{version_id}/prompt-preview")
@@ -333,7 +350,11 @@ async def prompt_preview(
         await session.execute(
             select(SuiteVersion, BenchmarkCase)
             .join(BenchmarkCase, BenchmarkCase.suite_version_id == SuiteVersion.id)
-            .where(SuiteVersion.id == version_id, BenchmarkCase.id == case_id)
+            .where(
+                SuiteVersion.id == version_id,
+                SuiteVersion.status == "published",
+                BenchmarkCase.id == case_id,
+            )
         )
     ).one_or_none()
     if row is None:
@@ -368,239 +389,6 @@ async def prompt_preview(
     }
 
 
-async def add_cases(
-    session: AsyncSession,
-    suite_version_id: int,
-    cases: list[BenchmarkCaseDefinition],
-) -> None:
-    session.add_all(
-        [
-            BenchmarkCase(
-                suite_version_id=suite_version_id,
-                stable_key=case.stable_key,
-                title=case.title,
-                category=case.category,
-                radar_dimension=case.radar_dimension,
-                difficulty=case.difficulty,
-                question=case.question,
-                reference_sql=case.reference_sql,
-                required_ast_json=[rule.model_dump(mode="json") for rule in case.required_ast],
-                comparison_json=case.comparison.model_dump(mode="json"),
-                weight=case.weight,
-                sort_order=case.sort_order,
-            )
-            for case in cases
-        ]
-    )
-
-
-@router.post("/suites")
-async def create_suite(
-    payload: SuiteDraftCreate,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    if await session.scalar(select(BenchmarkSuite.id).where(BenchmarkSuite.name == payload.name)):
-        raise fail(409, "suite_name_exists", "测试集名称已存在")
-    suite = BenchmarkSuite(name=payload.name, description=payload.description)
-    session.add(suite)
-    await session.flush()
-    version = SuiteVersion(
-        suite_id=suite.id,
-        version=1,
-        status="draft",
-        dialect=payload.dialect,
-        schema_sql=payload.schema_sql,
-        seed_sql=payload.seed_sql,
-        semantic_layer_json=payload.semantic.model_dump(mode="json"),
-        prompt_template=payload.prompt_template,
-    )
-    session.add(version)
-    await session.flush()
-    await add_cases(session, version.id, payload.cases)
-    await session.commit()
-    return {"suite_id": suite.id, "suite_version_id": version.id, "status": "draft"}
-
-
-@router.post("/suites/{suite_id}/clone")
-async def clone_suite_version(
-    suite_id: int,
-    source_version_id: int = Query(...),
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    source = await session.scalar(
-        select(SuiteVersion)
-        .options(selectinload(SuiteVersion.cases))
-        .where(SuiteVersion.id == source_version_id, SuiteVersion.suite_id == suite_id)
-    )
-    if source is None:
-        raise fail(404, "suite_version_not_found", "测试集版本不存在")
-    latest = await session.scalar(
-        select(func.max(SuiteVersion.version)).where(SuiteVersion.suite_id == suite_id)
-    )
-    clone = SuiteVersion(
-        suite_id=suite_id,
-        version=int(latest or 0) + 1,
-        status="draft",
-        dialect=source.dialect,
-        schema_sql=source.schema_sql,
-        seed_sql=source.seed_sql,
-        semantic_layer_json=source.semantic_layer_json,
-        prompt_template=source.prompt_template,
-    )
-    session.add(clone)
-    await session.flush()
-    definitions = [
-        BenchmarkCaseDefinition(
-            stable_key=case.stable_key,
-            title=case.title,
-            category=case.category,
-            radar_dimension=case.radar_dimension,
-            difficulty=case.difficulty,
-            question=case.question,
-            reference_sql=case.reference_sql,
-            required_ast=TypeAdapter(list[AstRule]).validate_python(case.required_ast_json),
-            comparison=ComparisonConfig.model_validate(case.comparison_json),
-            weight=case.weight,
-            sort_order=case.sort_order,
-        )
-        for case in source.cases
-    ]
-    await add_cases(session, clone.id, definitions)
-    await session.commit()
-    return {"suite_version_id": clone.id, "version": clone.version, "status": "draft"}
-
-
-@router.patch("/suite-versions/{version_id}")
-async def patch_suite_version(
-    version_id: int,
-    payload: SuiteDraftPatch,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    version = await session.get(SuiteVersion, version_id)
-    if version is None:
-        raise fail(404, "suite_version_not_found", "测试集版本不存在")
-    if version.status != "draft":
-        raise fail(409, "published_suite_immutable", "已发布版本不可修改，请先复制 draft")
-    if payload.schema_sql is not None:
-        version.schema_sql = payload.schema_sql
-    if payload.seed_sql is not None:
-        version.seed_sql = payload.seed_sql
-    if payload.semantic is not None:
-        version.semantic_layer_json = payload.semantic.model_dump(mode="json")
-    if payload.prompt_template is not None:
-        version.prompt_template = payload.prompt_template
-    if payload.cases is not None:
-        await session.execute(
-            delete(BenchmarkCase).where(BenchmarkCase.suite_version_id == version_id)
-        )
-        await add_cases(session, version_id, payload.cases)
-    await session.commit()
-    return {"suite_version_id": version_id, "status": "draft"}
-
-
-async def load_suite_source(
-    session: AsyncSession, version_id: int
-) -> tuple[SuiteVersion, SuiteSource]:
-    version = await session.scalar(
-        select(SuiteVersion)
-        .options(selectinload(SuiteVersion.cases), selectinload(SuiteVersion.suite))
-        .where(SuiteVersion.id == version_id)
-    )
-    if version is None:
-        raise fail(404, "suite_version_not_found", "测试集版本不存在")
-    definitions = [
-        BenchmarkCaseDefinition(
-            stable_key=case.stable_key,
-            title=case.title,
-            category=case.category,
-            radar_dimension=case.radar_dimension,
-            difficulty=case.difficulty,
-            question=case.question,
-            reference_sql=case.reference_sql,
-            required_ast=TypeAdapter(list[AstRule]).validate_python(case.required_ast_json),
-            comparison=ComparisonConfig.model_validate(case.comparison_json),
-            weight=case.weight,
-            sort_order=case.sort_order,
-        )
-        for case in sorted(version.cases, key=lambda item: item.sort_order)
-    ]
-    return version, SuiteSource(
-        name=version.suite.name,
-        description=version.suite.description,
-        dialect="duckdb",
-        schema_sql=version.schema_sql,
-        seed_sql=version.seed_sql,
-        semantic=SemanticLayer.model_validate(version.semantic_layer_json),
-        prompt_template=version.prompt_template,
-        cases=definitions,
-    )
-
-
-@router.post("/suite-versions/{version_id}/challenge-check")
-async def challenge_check(
-    version_id: int,
-    payload: ChallengeCheckRequest,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    version = await session.scalar(
-        select(SuiteVersion)
-        .options(selectinload(SuiteVersion.suite), selectinload(SuiteVersion.cases))
-        .where(SuiteVersion.id == version_id)
-    )
-    if version is None:
-        raise fail(404, "suite_version_not_found", "测试集版本不存在")
-    source = suite_source_from_models(version.suite, version)
-    try:
-        result = run_challenge_check(
-            source,
-            case_key=payload.case_key,
-            variants=[
-                ChallengeVariant.model_validate(item.model_dump()) for item in payload.variants
-            ],
-            candidates=[
-                ChallengeCandidate.model_validate(item.model_dump()) for item in payload.candidates
-            ],
-        )
-    except ValueError as exc:
-        raise fail(422, "challenge_invalid", str(exc)) from exc
-    return result.model_dump(mode="json")
-
-
-@router.post("/suite-versions/{version_id}/publish", response_model=PublishOut)
-async def publish_suite_version(
-    version_id: int,
-    session: AsyncSession = Depends(get_session),
-) -> dict[str, Any]:
-    version, source = await load_suite_source(session, version_id)
-    if version.status != "draft":
-        raise fail(409, "published_suite_immutable", "仅 draft 可发布")
-    try:
-        result = await asyncio.to_thread(validate_and_build, source)
-    except SuiteValidationError as exc:
-        raise fail(
-            422,
-            "suite_validation_failed",
-            "测试集校验失败",
-            [issue.model_dump(mode="json") for issue in exc.issues],
-        ) from exc
-    duplicate = await session.scalar(
-        select(SuiteVersion.id).where(
-            SuiteVersion.content_hash == result.content_hash,
-            SuiteVersion.id != version.id,
-        )
-    )
-    if duplicate is not None:
-        raise fail(409, "suite_content_exists", "相同内容已发布", {"version_id": duplicate})
-    version.status = "published"
-    version.content_hash = result.content_hash
-    version.structure_snapshot_json = result.structure.model_dump(mode="json")
-    version.published_at = datetime.now(UTC)
-    await session.commit()
-    return {
-        "suite_version_id": version.id,
-        "content_hash": result.content_hash,
-        "manifest": result.manifest,
-    }
 
 
 async def ensure_profile_healthy(profile: ModelProfile) -> None:
@@ -1038,7 +826,7 @@ async def stream_events(
                     "seq": stored.seq,
                     "event_type": stored.event_type,
                     "level": stored.level,
-                    "created_at": stored.created_at.isoformat(),
+                    "created_at": stored.created_at.replace(tzinfo=UTC).isoformat(),
                     "model_run_id": stored.model_run_id,
                     "case_run_id": stored.case_run_id,
                     "message": stored.message,
@@ -1117,7 +905,7 @@ async def event_history(
                 "seq": event.seq,
                 "event_type": event.event_type,
                 "level": event.level,
-                "created_at": event.created_at,
+                "created_at": event.created_at.replace(tzinfo=UTC),
                 "model_run_id": event.model_run_id,
                 "case_run_id": event.case_run_id,
                 "message": event.message,

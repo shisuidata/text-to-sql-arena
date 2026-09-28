@@ -9,14 +9,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
-import keyring
 import pytest
-from keyring.backend import KeyringBackend
 
 from backend.app.adapters.base import AdapterError, AdapterProfile
-from backend.app.adapters.pi import PiAdapter
+from backend.app.adapters.pi import (
+    PiAdapter,
+    get_pi_catalog,
+    list_pi_credentials,
+    pi_credential_reference,
+    preview_pi_import,
+    validate_parameters,
+    validate_pi_profile,
+)
 from backend.app.domain import GenerationOutput, GenerationRequest
-from backend.app.security import SERVICE_NAME
 
 ANSWER = {
     "plan": {
@@ -106,9 +111,20 @@ def profile(url: str) -> AdapterProfile:
         model_id="local-proof",
         base_url=url,
         response_mode="text",
-        api_key_ref="env:PI_AUDIT_KEY",
+        api_key_ref="pi-auth:openai",
         parameters={"provider": "openai", "auth_mode": "api_key", "timeout_seconds": 10},
     )
+
+
+@pytest.fixture
+def pi_login(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    directory = tmp_path / ".pi" / "agent"
+    directory.mkdir(parents=True)
+    (directory / "auth.json").write_text(
+        json.dumps({"openai": {"type": "api_key", "key": "audit-secret-value"}})
+    )
+    return directory
 
 
 def request(prompt: str = "Select a constant") -> GenerationRequest:
@@ -119,10 +135,9 @@ def request(prompt: str = "Select a constant") -> GenerationRequest:
 
 @pytest.mark.asyncio
 async def test_real_pi_calls_are_isolated_and_have_no_tools(
-    provider_server: ProviderServer, monkeypatch: pytest.MonkeyPatch
+    provider_server: ProviderServer, pi_login: Path
 ) -> None:
     url, calls, _ = provider_server
-    monkeypatch.setenv("PI_AUDIT_KEY", "audit-secret-value")
     events = []
 
     async def emit(kind: str, level: str, payload: dict[str, Any]) -> None:
@@ -152,11 +167,10 @@ async def test_real_pi_calls_are_isolated_and_have_no_tools(
 
 @pytest.mark.asyncio
 async def test_real_pi_does_not_retry_rate_limits_or_leak_credentials(
-    provider_server: ProviderServer, monkeypatch: pytest.MonkeyPatch
+    provider_server: ProviderServer, pi_login: Path
 ) -> None:
     url, calls, mode = provider_server
     mode["value"] = "rate_limit"
-    monkeypatch.setenv("PI_AUDIT_KEY", "audit-secret-value")
 
     async def emit(*args: Any) -> None:
         pass
@@ -170,11 +184,10 @@ async def test_real_pi_does_not_retry_rate_limits_or_leak_credentials(
 
 @pytest.mark.asyncio
 async def test_real_pi_refuses_tool_calls_without_continuation(
-    provider_server: ProviderServer, monkeypatch: pytest.MonkeyPatch
+    provider_server: ProviderServer, pi_login: Path
 ) -> None:
     url, calls, mode = provider_server
     mode["value"] = "tool"
-    monkeypatch.setenv("PI_AUDIT_KEY", "audit-secret-value")
 
     async def emit(*args: Any) -> None:
         pass
@@ -187,69 +200,471 @@ async def test_real_pi_refuses_tool_calls_without_continuation(
 
 
 @pytest.mark.asyncio
-async def test_oauth_check_imports_new_login_without_rolling_back_refresh(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    class MemoryKeyring(KeyringBackend):
-        priority = 1
-
-        def __init__(self) -> None:
-            self.values: dict[tuple[str, str], str] = {}
-
-        def get_password(self, service: str, username: str) -> str | None:
-            return self.values.get((service, username))
-
-        def set_password(self, service: str, username: str, password: str) -> None:
-            self.values[service, username] = password
-
-    monkeypatch.setenv("HOME", str(tmp_path))
-    pi_file = tmp_path / ".pi/agent/auth.json"
-    pi_file.parent.mkdir(parents=True)
-    old_login = {"type": "oauth", "access": "old-login", "refresh": "old-refresh", "expires": 1000}
-    pi_file.write_text(json.dumps({"openai-codex": old_login}))
+async def test_oauth_login_is_read_only_and_expiry_defers_to_pi(pi_agent_dir: Path) -> None:
+    pi_file = pi_agent_dir / "auth.json"
+    pi_file.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "type": "oauth",
+                    "access": "pi-access",
+                    "refresh": "pi-refresh",
+                    "expires": 1000,
+                }
+            }
+        )
+    )
     source_before = pi_file.read_bytes()
-    reference = "keyring:pi-oauth:openai-codex"
-    refreshed = {**old_login, "access": "refreshed", "refresh": "rotated", "expires": 2000}
-    previous_backend = keyring.get_keyring()
-    keyring.set_keyring(MemoryKeyring())
-    try:
-        keyring.set_password(SERVICE_NAME, reference, json.dumps(refreshed))
-        adapter = PiAdapter()
-        oauth_profile = AdapterProfile(
-            id=1,
-            name="OAuth",
-            adapter_kind="pi",
-            model_id="gpt-5.6-luna",
-            response_mode="text",
-            parameters={"provider": "openai-codex", "auth_mode": "oauth"},
+    oauth_profile = AdapterProfile(
+        id=1,
+        name="OAuth",
+        adapter_kind="pi",
+        model_id="gpt-5.6-luna",
+        response_mode="text",
+        api_key_ref="pi-auth:openai-codex",
+        parameters={"provider": "openai-codex", "auth_mode": "oauth"},
+    )
+    health = await PiAdapter().check(oauth_profile)
+    assert health.status == "healthy"
+    assert health.details["credential_source"] == "pi_auth_file"
+    assert "pi-access" not in json.dumps(health.details)
+    assert pi_file.read_bytes() == source_before
+
+    claims = base64.urlsafe_b64encode(b'{"exp":3}').decode().rstrip("=")
+    codex_file = pi_agent_dir.parent.parent / ".codex" / "auth.json"
+    codex_file.parent.mkdir()
+    codex_file.write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": f"header.{claims}.signature",
+                    "refresh_token": "codex-refresh",
+                    "account_id": "account",
+                }
+            }
         )
-        assert (await adapter.check(oauth_profile)).status == "healthy"
-        assert (
-            json.loads(keyring.get_password(SERVICE_NAME, reference) or "{}")["access"]
-            == "refreshed"
+    )
+    codex_before = codex_file.read_bytes()
+    preferred = await PiAdapter().check(oauth_profile)
+    assert preferred.status == "healthy"
+    assert preferred.details["credential_source"] == "codex_auth_file"
+    assert codex_file.read_bytes() == codex_before
+    assert pi_file.read_bytes() == source_before
+
+    pi_file.write_text(
+        json.dumps(
+            {
+                "openai-codex": {
+                    "type": "oauth",
+                    "access": "pi-access",
+                    "refresh": "pi-refresh",
+                    "expires": 1000,
+                }
+            }
         )
-        claims = base64.urlsafe_b64encode(b'{"exp":3}').decode().rstrip("=")
-        new_access = f"header.{claims}.signature"
-        codex_file = tmp_path / ".codex/auth.json"
-        codex_file.parent.mkdir()
-        codex_file.write_text(
-            json.dumps(
-                {
-                    "tokens": {
-                        "access_token": new_access,
-                        "refresh_token": "new-refresh",
-                        "account_id": "account",
+    )
+    codex_file.unlink()
+    codex_file.parent.rmdir()
+
+    async def emit(*args: Any) -> None:
+        pass
+
+    with pytest.raises(AdapterError) as caught:
+        await PiAdapter().generate(oauth_profile, request(), emit, asyncio.Event())
+    assert "运行 Pi" in str(caught.value)
+    assert caught.value.code == "provider_auth_error"
+
+
+@pytest.mark.asyncio
+async def test_catalog_and_import_preview_are_credential_blind(pi_agent_dir: Path) -> None:
+    (pi_agent_dir / "settings.json").write_text(
+        json.dumps({"enabledModels": ["openai-codex/gpt-5.6-sol", "openai/gpt-4o"]})
+    )
+    catalog = await get_pi_catalog()
+    codex = next(model for model in catalog["models"] if model["provider"] == "openai-codex")
+    assert catalog["version"] == "0.85.1"
+    assert codex["api"] == "openai-codex-responses"
+    assert codex["auth_modes"] == ["oauth"]
+
+    secret = "must-not-leak-import-secret"
+    preview = await preview_pi_import(
+        {
+            "prompt": secret,
+            "providers": {
+                "local-safe": {
+                    "baseUrl": "http://127.0.0.1:11434/v1",
+                    "api": "openai-completions",
+                    "apiKey": f"!echo {secret}",
+                    "headers": {"Authorization": f"Bearer {secret}"},
+                    "models": [{"id": "qwen-local", "contextWindow": 32768}],
+                }
+            },
+        }
+    )
+    rendered = json.dumps(preview, ensure_ascii=False)
+    assert secret not in rendered
+    assert preview["models"][0]["supported"] is False
+    assert "definition" not in preview["models"][0]
+    assert any("apiKey" in warning and "另行配置凭据" in warning for warning in preview["warnings"])
+    assert any("headers" in warning for warning in preview["warnings"])
+    assert any("固定提示" in warning for warning in preview["warnings"])
+
+    builtin_id = next(
+        model["model_id"]
+        for model in catalog["models"]
+        if model["provider"] == "openai" and model["supported"]
+    )
+    overridden = await preview_pi_import(
+        {
+            "providers": {
+                "openai": {
+                    "modelOverrides": {builtin_id: {"name": "Audited override", "maxTokens": 1234}}
+                }
+            }
+        }
+    )
+    assert len(overridden["models"]) == 1
+    assert overridden["models"][0]["name"] == "Audited override"
+    assert overridden["models"][0]["max_tokens"] == 1234
+    assert overridden["models"][0]["definition"]["kind"] == "builtin_override"
+
+
+@pytest.mark.asyncio
+async def test_catalog_follows_local_selection_without_full_directory_fallback(
+    pi_agent_dir: Path,
+) -> None:
+    assert (await get_pi_catalog())["models"] == []
+    (pi_agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "local": {
+                        "api": "openai-completions",
+                        "baseUrl": "http://localhost:11434/v1",
+                        "apiKey": "!do-not-execute-secret",
+                        "models": [{"id": "chosen"}, {"id": "hidden"}],
+                    },
+                    "openai-codex": {"modelOverrides": {"gpt-5.6-sol": {"maxTokens": 1234}}},
+                }
+            }
+        )
+    )
+    settings_file = pi_agent_dir / "settings.json"
+    settings_file.write_text(
+        json.dumps(
+            {
+                "enabledModels": [
+                    "openai-codex/gpt-5.6-sol:high",
+                    "local/chosen",
+                    "extension/model",
+                    "local/chosen",
+                ]
+            }
+        )
+    )
+    catalog = await get_pi_catalog()
+    assert [f"{m['provider']}/{m['model_id']}" for m in catalog["models"]] == [
+        "openai-codex/gpt-5.6-sol",
+        "local/chosen",
+        "extension/model",
+    ]
+    assert catalog["models"][0]["max_tokens"] == 1234
+    custom = catalog["models"][1]
+    assert custom["supported"] is True
+    validate_parameters(
+        {"provider": "local", "custom_model": custom["definition"]},
+        custom["base_url"],
+        "text",
+        "chosen",
+    )
+    assert catalog["models"][2]["supported"] is False
+    assert "definition" not in catalog["models"][2]
+    assert "do-not-execute-secret" not in json.dumps(catalog)
+    settings_file.write_text(json.dumps({"enabledModels": ["local/ch*"]}))
+    assert [m["model_id"] for m in (await get_pi_catalog())["models"]] == ["chosen"]
+    settings_file.write_text(
+        json.dumps(
+            {"enabledModels": [], "defaultProvider": "openai-codex", "defaultModel": "gpt-5.6-sol"}
+        )
+    )
+    assert (await get_pi_catalog())["models"] == []
+    settings_file.write_text("{invalid-json-secret")
+    with pytest.raises(AdapterError) as caught:
+        await get_pi_catalog()
+    assert "invalid-json-secret" not in str(caught.value)
+
+
+def test_imported_definition_validation_never_echoes_secret_input() -> None:
+    secret = "definition-secret-must-not-leak"
+    definition = {
+        "kind": "custom",
+        "provider": "local-safe",
+        "id": "qwen-local",
+        "name": "Qwen Local",
+        "api": "openai-completions",
+        "baseUrl": "https://user:password@example.com/v1",
+        "reasoning": False,
+        "input": ["text"],
+        "contextWindow": 32768,
+        "maxTokens": 4096,
+        "source": {"format": "pi-models-json", "piVersion": "0.85.1"},
+        "apiKey": secret,
+    }
+    with pytest.raises(ValueError) as caught:
+        validate_parameters(
+            {"provider": "local-safe", "custom_model": definition},
+            "https://example.com/v1",
+            "text",
+            "qwen-local",
+        )
+    assert secret not in str(caught.value)
+    assert "apiKey" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_imported_model_uses_pi_provider_without_definition_on_wire(
+    provider_server: ProviderServer, pi_login: Path
+) -> None:
+    url, calls, _ = provider_server
+    (pi_login / "auth.json").write_text(
+        json.dumps({"local-import": {"type": "api_key", "key": "audit-secret-value"}})
+    )
+    preview = await preview_pi_import(
+        {
+            "providers": {
+                "local-import": {
+                    "baseUrl": url,
+                    "api": "openai-completions",
+                    "models": [
+                        {
+                            "id": "imported-proof",
+                            "maxTokens": 4096,
+                            "compat": {
+                                "supportsStore": False,
+                                "supportsDeveloperRole": False,
+                                "supportsReasoningEffort": False,
+                            },
+                        }
+                    ],
+                }
+            }
+        }
+    )
+    imported = preview["models"][0]
+    assert imported["supported"] is True
+    assert imported["definition"]["compat"] == {
+        "supportsStore": False,
+        "supportsDeveloperRole": False,
+        "supportsReasoningEffort": False,
+    }
+    imported_profile = AdapterProfile(
+        id=2,
+        name="imported proof",
+        adapter_kind="pi",
+        model_id=imported["model_id"],
+        base_url=imported["base_url"],
+        response_mode="text",
+        api_key_ref="pi-auth:local-import",
+        parameters={
+            "provider": imported["provider"],
+            "auth_mode": "api_key",
+            "timeout_seconds": 10,
+            "custom_model": imported["definition"],
+        },
+    )
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    async def emit(kind: str, level: str, payload: dict[str, Any]) -> None:
+        events.append((kind, payload))
+
+    result = await PiAdapter().generate(
+        imported_profile, request("IMPORTED_MODEL_SENTINEL"), emit, asyncio.Event()
+    )
+    assert result.parsed_output.sql == "SELECT 1 AS value"
+    assert len(calls) == 1
+    requested = next(payload for kind, payload in events if kind == "provider.requested")
+    invocation = requested["invocation"]
+    assert invocation["model_identity_source"] == "pi_models_json_import_preview"
+    assert "custom_model" not in invocation["effective_parameters"]
+    assert "custom_model" not in json.dumps(invocation["wire_payload"])
+    assert invocation["imported_definition_source"]["format"] == "pi-models-json"
+
+
+def _pi_local_credential_setup(pi_agent_dir: Path, key: str = "pi-stored-secret") -> None:
+    (pi_agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "local-pi": {
+                        "api": "openai-completions",
+                        "baseUrl": "http://127.0.0.1:11434/v1",
+                        "models": [{"id": "qwen-local", "maxTokens": 4096}],
                     }
                 }
-            )
+            }
         )
-        codex_before = codex_file.read_bytes()
-        assert (await adapter.check(oauth_profile)).status == "healthy"
-        assert (
-            json.loads(keyring.get_password(SERVICE_NAME, reference) or "{}")["access"]
-            == new_access
+    )
+    (pi_agent_dir / "settings.json").write_text(
+        json.dumps({"enabledModels": ["local-pi/qwen-local"]})
+    )
+    (pi_agent_dir / "auth.json").write_text(
+        json.dumps({"local-pi": {"type": "api_key", "key": key}})
+    )
+
+
+@pytest.mark.asyncio
+async def test_pi_local_credential_is_referenced_without_copying(pi_agent_dir: Path) -> None:
+    _pi_local_credential_setup(pi_agent_dir)
+    reference = await pi_credential_reference(
+        "local-pi", "qwen-local", "http://127.0.0.1:11434/v1", "api_key"
+    )
+    assert reference == "pi-auth:local-pi"
+    local = AdapterProfile(
+        id=3,
+        name="pi local credential",
+        adapter_kind="pi",
+        model_id="qwen-local",
+        base_url="http://127.0.0.1:11434/v1",
+        response_mode="text",
+        api_key_ref=reference,
+        parameters={"provider": "local-pi", "auth_mode": "api_key", "timeout_seconds": 10},
+    )
+    credential, source = PiAdapter()._credential(local, validate_pi_profile(local))
+    assert credential == {"type": "api_key", "key": "pi-stored-secret"}
+    assert source == "pi_auth_file"
+    health = await PiAdapter().check(local)
+    assert health.status == "healthy"
+    assert health.details["credential_source"] == "pi_auth_file"
+    assert "pi-stored-secret" not in json.dumps(health.details)
+
+    mismatched = local.model_copy(
+        update={"parameters": {**local.parameters, "provider": "other-provider"}}
+    )
+    with pytest.raises(AdapterError) as caught:
+        PiAdapter()._credential(mismatched, validate_pi_profile(mismatched))
+    assert "Provider 不一致" in str(caught.value)
+
+    legacy = local.model_copy(update={"api_key_ref": "env:PI_AUDIT_KEY"})
+    with pytest.raises(AdapterError) as removed:
+        PiAdapter()._credential(legacy, validate_pi_profile(legacy))
+    assert "已移除的评测台凭据" in str(removed.value)
+
+
+@pytest.mark.asyncio
+async def test_pi_credential_reference_requires_login_and_exact_endpoint(
+    pi_agent_dir: Path,
+) -> None:
+    _pi_local_credential_setup(pi_agent_dir)
+    with pytest.raises(AdapterError) as unkeyed:
+        await pi_credential_reference("kimi-coding", "k3", None, "api_key")
+    assert "没有 kimi-coding 的 API Key" in str(unkeyed.value)
+    with pytest.raises(AdapterError) as missing_login:
+        await pi_credential_reference("openai-codex", "gpt-5.6-sol", None, "oauth")
+    assert "订阅登录" in str(missing_login.value)
+    with pytest.raises(AdapterError) as overridden:
+        await pi_credential_reference(
+            "local-pi", "qwen-local", "https://proxy.example/v1", "api_key"
         )
-        assert pi_file.read_bytes() == source_before
-        assert codex_file.read_bytes() == codex_before
-    finally:
-        keyring.set_keyring(previous_backend)
+    assert "服务端地址" in str(overridden.value)
+    assert (
+        await pi_credential_reference(
+            "local-pi", "qwen-local", "http://127.0.0.1:11434/v1", "api_key"
+        )
+        == "pi-auth:local-pi"
+    )
+
+
+@pytest.mark.asyncio
+async def test_loopback_endpoint_without_stored_key_needs_no_credential(pi_agent_dir: Path) -> None:
+    (pi_agent_dir / "auth.json").write_text(json.dumps({}))
+    assert (
+        await pi_credential_reference(
+            "ollama", "local-model", "http://127.0.0.1:11434/v1", "api_key"
+        )
+        is None
+    )
+    loopback = AdapterProfile(
+        id=4,
+        name="loopback",
+        adapter_kind="pi",
+        model_id="local-model",
+        base_url="http://127.0.0.1:11434/v1",
+        response_mode="text",
+        api_key_ref=None,
+        parameters={"provider": "ollama", "auth_mode": "api_key", "timeout_seconds": 10},
+    )
+    credential, source = PiAdapter()._credential(loopback, validate_pi_profile(loopback))
+    assert credential == {"type": "api_key", "key": "local-no-auth"}
+    assert source == "local_no_auth"
+    with pytest.raises(AdapterError) as remote:
+        await pi_credential_reference("deepseek-official", "deepseek-v4-pro", None, "api_key")
+    assert "没有 deepseek-official 的 API Key" in str(remote.value)
+
+
+@pytest.mark.asyncio
+async def test_pi_credentials_listing_is_presence_only(pi_agent_dir: Path) -> None:
+    _pi_local_credential_setup(pi_agent_dir, key="listing-secret-value")
+    (pi_agent_dir / "auth.json").write_text(
+        json.dumps(
+            {
+                "local-pi": {"type": "api_key", "key": "listing-secret-value"},
+                "subscription": {"type": "oauth", "access": "listing-oauth-value"},
+                "empty": {"type": "api_key"},
+            }
+        )
+    )
+    listing = await list_pi_credentials()
+    assert listing == {
+        "providers": [
+            {"provider": "local-pi", "types": ["api_key"]},
+            {"provider": "subscription", "types": ["oauth"]},
+        ]
+    }
+    assert "listing-secret-value" not in json.dumps(listing)
+    assert "listing-oauth-value" not in json.dumps(listing)
+
+    claims = base64.urlsafe_b64encode(b'{"exp":3}').decode().rstrip("=")
+    codex_file = pi_agent_dir.parent.parent / ".codex" / "auth.json"
+    codex_file.parent.mkdir()
+    codex_file.write_text(
+        json.dumps(
+            {
+                "tokens": {
+                    "access_token": f"header.{claims}.signature",
+                    "refresh_token": "codex-refresh",
+                    "account_id": "account",
+                }
+            }
+        )
+    )
+    assert (await list_pi_credentials())["providers"] == [
+        {"provider": "local-pi", "types": ["api_key"]},
+        {"provider": "openai-codex", "types": ["oauth"]},
+        {"provider": "subscription", "types": ["oauth"]},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_import_preview_rejects_unsafe_entries_without_echoing_secrets() -> None:
+    secret = "preview-url-credential-must-not-leak"
+    providers = [
+        {"models": [{"id": "missing-api"}]},
+        {
+            "api": "openai-completions",
+            "baseUrl": f"https://user:{secret}@example.invalid/v1",
+            "models": [{"id": "unsafe-url"}],
+        },
+        {
+            "api": "openai-completions",
+            "baseUrl": "http://localhost:11434/v1",
+            "models": [{"id": "invalid-input", "input": {"apiKey": secret}}],
+        },
+    ]
+    for provider in providers:
+        preview = await preview_pi_import({"providers": {"local": provider}})
+        rendered = json.dumps(preview, ensure_ascii=False)
+        assert secret not in rendered
+        entry = preview["models"][0]
+        assert entry["supported"] is False
+        assert "definition" not in entry
+        assert entry["unavailable_reason"]

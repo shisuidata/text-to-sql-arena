@@ -19,9 +19,9 @@
 
 | 能力 | 当前实现 |
 | --- | --- |
-| 题库编写 | 在 Web UI 创建草稿、克隆版本、编辑 Schema/Seed/Semantic/Prompt/Cases、预览 Prompt、发布不可变版本 |
+| 题库说明 | 只读查看已发布版本、题目范围与内容哈希；内置题库展示名与版本号分开，不提供题库编辑或草稿发布 |
 | 确定性数据 | DuckDB 1.5.5、UTC、固定 SQL 种子、单线程金标构建、内容寻址产物 |
-| 模型接入 | 新配置统一使用固定 `@earendil-works/pi-ai` 0.85.1 低层调用；GPT 订阅走 `openai-codex` OAuth，API 接入可选 OpenAI/Anthropic/Google 或自定义 Provider |
+| 模型接入 | 固定 `@earendil-works/pi-ai` 0.85.1；模型完全来自本机 Pi（`enabledModels` + 锁定目录 + 本机 `models.json` 声明式定义），凭据只读 Pi 凭据文件，评测台只保存 `pi-auth:<provider>` 引用 |
 | 公平性 | 新运行固定 Pi、文本响应、单轮、无工具、无重试和统一 Prompt；冻结并披露 Provider、认证、模型、参数与隔离控制，不把“同一框架”写成“同端点/同模型” |
 | 结构化输出 | `query-plan-v1`：`plan`、`sql`、`summary`、`assumptions` 四个必填字段 |
 | SQL 安全 | SQLGlot 单语句解析、只读 AST、表白名单、外部访问函数拒绝；独立进程只读执行、超时、行数和内存上限 |
@@ -29,9 +29,9 @@
 | 评分 | 业务结果正确率为主，格式另报；政策拒绝与执行错误不冒充业务错解；保留综合分作辅助，分母包含全部计划尝试 |
 | 资源效率 | 新 efficiency-v2 按实际正确题归一，Pi 缓存输入不重复扣减；历史 v1 得分折算仅按原口径展示，缺价/缺数据不估算 |
 | 运行控制 | 1–6 个 Pi 模型、每题固定 1 次尝试、只读预检、浏览器评测方案、取消、精确/当前配置复跑、关联失败/未满分补跑；旧配置仅供历史查看和删除 |
-| 观赛与复核 | 分层报告、关键回合、真实历史逐题回放、本机匿名竞猜；控制项一致后才做逐题结果回归比较 |
+| 报告与复核 | 分层报告、题目得分差异、历史逐题回放、本地匿名预测；控制项一致后才做逐题结果回归比较 |
 | 证据发布 | 单场脱敏预览与摘要确认后下载 ZIP；CLI 全量导出仍可用；导出不等于部署上线 |
-| 本地安全 | 默认仅绑定 loopback；Host/Origin/CSRF 校验；Keychain/环境变量密钥引用；事件和公开证据脱敏 |
+| 本地安全 | 默认仅绑定 loopback；Host/Origin/CSRF 校验；凭据由本机 Pi 管理，评测台只存 `pi-auth:<provider>` 引用；事件和公开证据脱敏 |
 
 完整清单见 [docs/capabilities.md](docs/capabilities.md)。
 
@@ -44,8 +44,8 @@
 - [uv](https://docs.astral.sh/uv/)；
 - Node.js `>=22.19`；
 - pnpm 10；
-- 现代浏览器；本地工作台已在 1440px、768px、390px 宽实际验证；复杂 SQL 编辑建议桌面；
-- GPT 订阅 OAuth 需先通过支持的外部 Pi CLI 登录或既有 Codex 登录取得凭据；API Provider 使用 API Key 或环境变量引用。
+- 现代浏览器；本地工作台已在 1440px、768px、390px 宽实际验证；复杂 SQL 证据对照建议桌面；
+- 模型与凭据全部来自本机 Pi：模型由 `~/.pi/agent/settings.json` 的 `enabledModels` 与锁定目录、本机 `~/.pi/agent/models.json` 声明式定义解析；凭据只读 `~/.pi/agent/auth.json`（`openai-codex` 仍可用既有 `~/.codex/auth.json`）。评测台不复制、不写入、不刷新凭据，只保存 `pi-auth:<provider>` 引用；OAuth 过期需先回 Pi 刷新登录。
 
 ### 安装与构建
 
@@ -78,11 +78,13 @@ uv run python -m backend.app.cli serve
 
 ## 运行一次评测
 
-1. 在“参赛模型”创建新的 Pi 配置：GPT 订阅选择 `openai-codex` + OAuth（本地 catalog 提供 `gpt-5.6-luna` / `gpt-5.6-sol`）；API 模型选择 OpenAI、Anthropic、Google 或填写自定义 Provider。点击“检查本地配置”只核对 catalog、凭据和参数，不调用模型，也不证明 Provider 可用。OAuth 凭据可来自支持的外部 Pi CLI 登录或既有 Codex 登录文件；应用只导入凭据到系统钥匙串，不读取配置、工具或会话。
-2. 在“赛题实验室”选择已发布版本，或克隆为草稿后修改并发布；可用固定数据变体检查典型错解。
-3. 在“开赛与往期”选择 Pi 模型和题目；新运行固定每题单次调用，可保存本浏览器方案。旧适配器不会进入新运行。只读预检通过后才能开赛，不虚构耗时或费用。
-4. 在实时页观察业务题意、Prompt、Provider、SQL、比较和评分事件；历史运行不冒充直播。
-5. 报告分“看比赛 / 看门道 / 查证据”：看关键回合，再核对质量指标与 SQL 证据，最后比较冻结合同和导出材料。
+1. 在“模型配置”点击“添加模型”：从 **已接入模型**选择当前本机配置的模型并选择认证方式，推理档位随模型能力展示。名单来自 `~/.pi/agent/settings.json` 的 `enabledModels`；能力来自锁定 Pi 目录与本机 `models.json` 声明式定义，不会展示完整内置目录，也没有手工兼容端点或上传 models.json 入口。凭据由本机 Pi 管理：评测台只读 `~/.pi/agent/auth.json`（`openai-codex` 仍可用既有 `~/.codex/auth.json`），只保存 `pi-auth:<provider>` 引用，不复制、不写入、不刷新；运行时读取凭据文件，凭据明文不进入评测台 API。有凭据且 Pi 目录能解析出服务端地址时，该地址不可覆盖（覆盖即拒绝保存）；本机环回端点且 Pi 无凭据时不发送凭据。GPT 订阅使用 `openai-codex` + OAuth，输出上限由 Provider 管理；凭据缺失或过期时按提示先回 Pi 刷新登录。显示已接入不保证账号权限，价格仍需手工配置。
+   - 本机声明式自定义模型自动解析；仅由扩展注册或无法安全解析的模型标为不可用，不静默降级。
+   - 点击“检查本地配置”只核对目录定义、凭据存在性和参数，不发送生成请求，也不证明远端可用。评测运行不自动加载个人配置或会话。
+2. 在“测试集”查看已发布版本和题目。零售分析 SQL 测试集只有一个名称；版本、题数、方言和内容哈希作为评测标签，旧运行保留原版本快照。
+3. 在“新建评测”选版本与题目、已接入模型；先核对题数与总调用量。预检只检查本地配置，不调用模型，也不保证远端可用。点击“开始评测”才会真实发起每题每模型一次的请求，可能产生费用；旧适配器不能进入新运行。
+4. 实时页默认展示 **模型输出**：深色阅读区按模型、题目连续追加文本，显示请求状态、耗时和返回的 Token。**阅读视图**实时展开查询规划、SQL、说明和假设，按 JSON 语义还原换行并保留 SQL 缩进；**原始文本**保留收到的字符原样。不识别的格式直接按原文显示。每栏可跟随最新题目或固定查看一题，上滚只暂停自动滚动，不中断接收。切换深色 **事件日志** 查看未压平换行、未截断的事件摘要与原始调用明细。刷新补齐历史，断线按 seq 自动续传；失败或取消保留已收到片段，终态停止订阅。
+5. 报告分“结果概览 / 逐题分析 / 配置与证据”：概览按已保存证据给出简短结果与能力观察，列出本次哪些题未匹配金标、哪些指定写法未通过以及非业务失败；逐题展开模型请求、输出协议、SQL 执行和结果比对，进入证据工作台查看完整 Prompt、原始输出、实际结果、金标与差异。未执行的题不算业务错解，单次失分也不能证明普遍能力不足；配置页核对实际调用控制项后再比较模型。
 6. 复测可选择精确快照或当前配置、全部题或失败/未满分子集。新运行关联原记录，不覆盖旧结果。
 7. 对终态运行先预览脱敏材料，再确认下载单场发布包。上线仍是独立、明确授权的操作。
 
@@ -116,9 +118,9 @@ pnpm dev
 
 执行 `pnpm check && pnpm build && pnpm verify:build` 会生成公开边界内的正文与证据页面并检查内部链接。该命令只构建本地静态产物，不部署站点。
 
-自动部署使用 Cloudflare Pages 原生 Git 集成：项目 `text-to-sql-arena-git` 直接连接 `rockythink/text-to-sql-arena`，生产域名为 `arena.ss-data.cc`。
+Cloudflare Pages 项目 `text-to-sql-arena-git` 使用原生 Git 集成，生产域名为 `arena.ss-data.cc`。GitHub 仓库现为 `shisuidata/text-to-sql-arena`。已核实生产站点可访问、项目仍为 Git Provider、最近生产部署的提交与当前 `main` HEAD 一致；仓库转移后下一次推送能否自动触发尚未实测。请在 Pages 项目的 Git 集成设置中核对源仓库及组织授权，必要时重新连接，并以一次新的 `main` 部署验证触发链路。
 
-- `main` 的每次推送由 Cloudflare 自动克隆源码、检查、构建和部署；其他分支生成预览部署，不覆盖生产。
+- Git 集成正常时，`main` 的推送由 Cloudflare 自动克隆源码、检查、构建和部署；其他分支生成预览部署，不覆盖生产。
 - Cloudflare 构建根目录为 `site`，输出目录为 `dist`，使用 v3 构建镜像。构建命令为 `pnpm install --frozen-lockfile && pnpm check && pnpm build && pnpm verify:build`；任一步骤失败都不会发布该次产物。
 - 生产与预览的构建变量均在 Cloudflare 项目设置中维护：`NODE_VERSION=22`、`PNPM_VERSION=10.15.1`、`SKIP_DEPENDENCY_INSTALL=true`、`SITE_URL=https://arena.ss-data.cc`、`SITE_BASE=/`。跳过默认依赖安装，统一由构建命令按锁文件安装。
 - `.github/workflows/docs.yml` 仅保留站点 CI 检查，不再上传或部署；GitHub Actions 不需要 Cloudflare 部署密钥。旧的 `site/wrangler.toml` 已移除，避免覆盖控制台中的构建变量。

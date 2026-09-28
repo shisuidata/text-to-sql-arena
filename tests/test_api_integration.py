@@ -11,7 +11,8 @@ from typing import Any, cast
 import pytest
 import yaml
 from fastapi.testclient import TestClient
-from sqlalchemy import select, update
+from sqlalchemy import delete, func, select, update
+from sqlalchemy.orm import selectinload
 
 from backend.app.adapters.base import (
     AdapterError,
@@ -20,11 +21,20 @@ from backend.app.adapters.base import (
     EventSink,
     GenerationResponse,
 )
+from backend.app.adapters.pi import preview_pi_import
 from backend.app.adapters.registry import adapter_registry
 from backend.app.db import SessionLocal
 from backend.app.domain import GenerationOutput, GenerationRequest, QueryPlan
 from backend.app.main import app
-from backend.app.models import CaseRun, ModelProfile, ModelRun
+from backend.app.models import (
+    BenchmarkCase,
+    BenchmarkSuite,
+    CaseRun,
+    ComparisonRun,
+    ModelProfile,
+    ModelRun,
+    SuiteVersion,
+)
 from backend.app.services.evidence import export_all_evidence, verify_evidence
 
 TERMINAL = {"completed", "completed_with_errors", "failed", "cancelled", "interrupted"}
@@ -33,6 +43,153 @@ REFERENCES = {
     case["stable_key"]: case["reference_sql"]
     for case in yaml.safe_load((DATA_DIR / "cases.yaml").read_text())
 }
+
+
+def _result_preview_fixture() -> dict[str, Any]:
+    return {
+        "columns": [{"name": "id", "type": "BIGINT"}],
+        "rows": [[2]],
+        "row_count": 1,
+        "missing": [["1", "甲"]],
+        "extra": [["3", "丙"]],
+        "comparison_summary": {
+            "verdict": "different",
+            "expected_count": 3,
+            "actual_count": 3,
+            "matched_count": 2,
+            "missing_count": 1,
+            "extra_count": 1,
+            "order_mismatch": False,
+        },
+    }
+
+
+def test_case_evidence_redaction_copies_preview_and_formats_reference(tmp_path: Path) -> None:
+    from backend.app.db import Base, engine
+    from backend.app.services.reporting import _format_reference_sql, build_case_evidence
+
+    assert _format_reference_sql("select 999") == "SELECT\n  999"
+    assert _format_reference_sql("select 1; select 2") is None
+    assert _format_reference_sql("not sql!") is None
+
+    gold_dir = tmp_path / "evidence-format-hash" / "gold"
+    gold_dir.mkdir(parents=True)
+    (gold_dir / "case-a.json").write_text(
+        json.dumps(
+            {
+                "columns": [{"name": "id", "type": "BIGINT"}],
+                "rows": [[1]],
+                "digest": "gold-digest",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    async def scenario() -> None:
+        async with engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        suite = BenchmarkSuite(name="evidence-isolated", description="")
+        version = SuiteVersion(
+            suite=suite,
+            version=1,
+            status="published",
+            dialect="duckdb",
+            schema_sql="",
+            seed_sql="",
+            semantic_layer_json={},
+            prompt_template="",
+            content_hash="evidence-format-hash",
+        )
+        case = BenchmarkCase(
+            suite_version=version,
+            stable_key="case-a",
+            title="题 A",
+            category="filter",
+            radar_dimension="基础查询",
+            difficulty="easy",
+            question="q",
+            reference_sql="select 999",
+            required_ast_json=[],
+            comparison_json={},
+            sort_order=1,
+        )
+        profile = ModelProfile(
+            name="evidence-historical",
+            adapter_kind="codex_cli",
+            model_id="model",
+            base_url=None,
+            response_mode="text",
+            parameters_json={},
+            pricing_json=None,
+            enabled=True,
+            health_status="unknown",
+            health_details_json={},
+        )
+        async with SessionLocal() as session:
+            session.add_all([suite, version, case, profile])
+            await session.flush()
+            run = ComparisonRun(
+                suite_version_id=version.id,
+                suite_content_hash="evidence-format-hash",
+                selected_case_keys_json=["case-a"],
+                status="completed",
+            )
+            session.add(run)
+            await session.flush()
+            model_run = ModelRun(
+                comparison_run_id=run.id,
+                model_profile_id=profile.id,
+                selection_order=0,
+                adapter_kind_snapshot="codex_cli",
+                response_mode_snapshot="text",
+                requested_model_id="model",
+                parameters_snapshot_json={},
+            )
+            session.add(model_run)
+            await session.flush()
+            case_run = CaseRun(
+                model_run_id=model_run.id,
+                benchmark_case_id=case.id,
+                stable_case_key_snapshot="case-a",
+                attempt=1,
+                status="completed",
+                result_preview_json=_result_preview_fixture(),
+                score_breakdown_json={"total": 80},
+            )
+            session.add(case_run)
+            await session.commit()
+            case_run_id = case_run.id
+            try:
+                hidden = await build_case_evidence(session, case_run_id)
+                revealed = await build_case_evidence(
+                    session, case_run_id, include_reference=True, artifact_root=tmp_path
+                )
+                fresh = await session.get(CaseRun, case_run_id)
+            finally:
+                await session.execute(delete(CaseRun).where(CaseRun.id == case_run_id))
+                await session.execute(delete(ModelRun).where(ModelRun.id == model_run.id))
+                await session.execute(delete(ComparisonRun).where(ComparisonRun.id == run.id))
+                await session.execute(delete(ModelProfile).where(ModelProfile.id == profile.id))
+                await session.execute(delete(BenchmarkCase).where(BenchmarkCase.id == case.id))
+                await session.execute(delete(SuiteVersion).where(SuiteVersion.id == version.id))
+                await session.execute(delete(BenchmarkSuite).where(BenchmarkSuite.id == suite.id))
+                await session.commit()
+
+        assert "missing" not in hidden["result_preview"]
+        assert "extra" not in hidden["result_preview"]
+        assert hidden["result_preview"]["comparison_summary"] == _result_preview_fixture()[
+            "comparison_summary"
+        ]
+        assert "reference_sql" not in hidden
+        assert "formatted_reference_sql" not in hidden
+        assert revealed["reference_sql"] == "select 999"
+        assert revealed["formatted_reference_sql"] == "SELECT\n  999"
+        assert revealed["result_preview"]["missing"] == [["1", "甲"]]
+        assert fresh is not None and fresh.result_preview_json is not None
+        assert fresh.result_preview_json["missing"] == [["1", "甲"]]
+
+    asyncio.run(scenario())
 
 
 class FixtureAdapter:
@@ -204,6 +361,18 @@ def test_two_model_state_machine_resume_and_report(monkeypatch: Any, tmp_path: P
             ]
         assert streamed and all(event["seq"] > pivot for event in streamed)
         assert all("message" in event and "payload" in event for event in streamed)
+        # SQLite drops timezone metadata; replay/history must still identify UTC instants.
+        assert all(
+            datetime.fromisoformat(event["created_at"]).utcoffset() == timedelta(0)
+            for event in [*history, *streamed]
+        )
+        history_times = {
+            event["seq"]: datetime.fromisoformat(event["created_at"]) for event in history
+        }
+        assert all(
+            datetime.fromisoformat(event["created_at"]) == history_times[event["seq"]]
+            for event in streamed
+        )
 
         case_run = snapshot["models"][0]["cases"][0]
         hidden = client.get(f"/api/case-runs/{case_run['id']}").json()
@@ -296,6 +465,104 @@ def test_browser_safety_rejects_untrusted_requests() -> None:
         assert missing_csrf.status_code == 403
         assert missing_csrf.json()["code"] == "csrf_forbidden"
 
+def test_suite_catalog_is_read_only_and_hides_drafts() -> None:
+    async def seed_drafts() -> tuple[str, int, int, int, str]:
+        async with SessionLocal() as session:
+            published = await session.scalar(
+                select(SuiteVersion)
+                .options(selectinload(SuiteVersion.suite), selectinload(SuiteVersion.cases))
+                .where(SuiteVersion.status == "published")
+                .limit(1)
+            )
+            assert published is not None
+            assert published.cases
+            latest = await session.scalar(
+                select(func.max(SuiteVersion.version)).where(
+                    SuiteVersion.suite_id == published.suite_id
+                )
+            )
+            draft_only_name = f"draft-only-{time.time_ns()}"
+            draft_only_suite = BenchmarkSuite(name=draft_only_name, description="hidden draft")
+            session.add(draft_only_suite)
+            await session.flush()
+            draft_only = SuiteVersion(
+                suite_id=draft_only_suite.id,
+                version=1,
+                status="draft",
+                dialect=published.dialect,
+                schema_sql=published.schema_sql,
+                seed_sql=published.seed_sql,
+                semantic_layer_json=published.semantic_layer_json,
+                prompt_template=published.prompt_template,
+                structure_snapshot_json=published.structure_snapshot_json,
+            )
+            mixed_draft = SuiteVersion(
+                suite_id=published.suite_id,
+                version=int(latest or 0) + 1,
+                status="draft",
+                dialect=published.dialect,
+                schema_sql=published.schema_sql,
+                seed_sql=published.seed_sql,
+                semantic_layer_json=published.semantic_layer_json,
+                prompt_template=published.prompt_template,
+                structure_snapshot_json=published.structure_snapshot_json,
+            )
+            session.add_all([draft_only, mixed_draft])
+            await session.flush()
+            source_case = published.cases[0]
+            draft_case = BenchmarkCase(
+                suite_version_id=draft_only.id,
+                stable_key=source_case.stable_key,
+                title=source_case.title,
+                category=source_case.category,
+                radar_dimension=source_case.radar_dimension,
+                difficulty=source_case.difficulty,
+                question=source_case.question,
+                reference_sql=source_case.reference_sql,
+                required_ast_json=source_case.required_ast_json,
+                comparison_json=source_case.comparison_json,
+                weight=source_case.weight,
+                sort_order=source_case.sort_order,
+            )
+            session.add(draft_case)
+            await session.commit()
+            return (
+                draft_only_name,
+                draft_only.id,
+                draft_case.id,
+                mixed_draft.id,
+                published.suite.name,
+            )
+
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        draft_name, draft_version_id, draft_case_id, mixed_draft_id, published_name = (
+            asyncio.run(seed_drafts())
+        )
+        response = client.get("/api/suites")
+        assert response.status_code == 200, response.text
+        suites = response.json()
+        assert draft_name not in {suite["name"] for suite in suites}
+        published_suite = next(suite for suite in suites if suite["name"] == published_name)
+        assert published_suite["name"] == published_name
+        assert all(version["status"] == "published" for version in published_suite["versions"])
+        assert mixed_draft_id not in {version["id"] for version in published_suite["versions"]}
+
+        hidden_preview = client.get(
+            f"/api/suite-versions/{draft_version_id}/prompt-preview?case_id={draft_case_id}"
+        )
+        assert hidden_preview.status_code == 404
+        assert hidden_preview.json()["code"] == "suite_case_not_found"
+
+        headers = csrf(client)
+        removed_requests = [
+            client.post("/api/suites", headers=headers, json={}),
+            client.post("/api/suites/1/clone", headers=headers),
+            client.patch(f"/api/suite-versions/{draft_version_id}", headers=headers, json={}),
+            client.post(f"/api/suite-versions/{draft_version_id}/validate", headers=headers),
+            client.post(f"/api/suite-versions/{draft_version_id}/publish", headers=headers),
+            client.post(f"/api/suite-versions/{draft_version_id}/challenge-check", headers=headers),
+        ]
+        assert all(response.status_code in {404, 405} for response in removed_requests)
 
 def test_cancelled_run_reaches_terminal_state(monkeypatch: Any) -> None:
     fixture = FixtureAdapter()
@@ -323,7 +590,7 @@ def test_cancelled_run_reaches_terminal_state(monkeypatch: Any) -> None:
         assert history[-1]["event_type"] == "run.cancelled"
 
 
-def test_preflight_failed_rerun_publication_and_challenge(monkeypatch: Any, tmp_path: Path) -> None:
+def test_preflight_failed_rerun_and_publication(monkeypatch: Any, tmp_path: Path) -> None:
     fixture = FixtureAdapter()
     monkeypatch.setitem(adapter_registry._adapters, "pi", fixture)
     with TestClient(app, base_url="http://127.0.0.1") as client:
@@ -348,25 +615,6 @@ def test_preflight_failed_rerun_publication_and_challenge(monkeypatch: Any, tmp_
         assert len(check["models"]) == 2
         assert {item["id"] for item in client.get("/api/runs").json()["runs"]} == before
 
-        challenge = client.post(
-            f"/api/suite-versions/{suite['id']}/challenge-check",
-            headers=headers,
-            json={
-                "case_key": case["stable_key"],
-                "variants": [
-                    {"name": "identity", "seed_sql": "UPDATE dim_customers SET city = city;"}
-                ],
-                "candidates": [
-                    {
-                        "name": "reference equivalent",
-                        "sql": REFERENCES[case["stable_key"]],
-                        "expected": "correct",
-                    }
-                ],
-            },
-        )
-        assert challenge.status_code == 200, challenge.text
-        assert challenge.json()["summary"]["passed"] is True
 
         created = client.post("/api/runs", headers=headers, json=payload)
         assert created.status_code == 200, created.text
@@ -582,3 +830,182 @@ def test_pi_only_creation_single_attempt_and_legacy_migration_gate() -> None:
         created = client.post("/api/runs", headers=headers, json=payload)
         assert created.status_code == 422
         assert created.json()["code"] == "legacy_profile_migration_required"
+
+
+def test_pi_catalog_and_profile_definition_contract(pi_agent_dir: Path) -> None:
+    (pi_agent_dir / "settings.json").write_text(
+        json.dumps({"enabledModels": ["openai-codex/gpt-5.6-sol"]})
+    )
+    secret = "http-import-secret-must-not-leak"
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        headers = csrf(client)
+        catalog = client.get("/api/pi/catalog")
+        assert catalog.status_code == 200
+        codex = next(
+            model for model in catalog.json()["models"] if model["provider"] == "openai-codex"
+        )
+        assert codex["auth_modes"] == ["oauth"]
+        assert "definition" not in codex
+
+        preview = asyncio.run(
+            preview_pi_import(
+                {
+                    "tools": [{"secret": secret}],
+                    "providers": {
+                        "local-http": {
+                            "baseUrl": "http://127.0.0.1:11434/v1",
+                            "api": "openai-completions",
+                            "apiKey": f"!echo {secret}",
+                            "models": [{"id": "qwen-http", "maxTokens": 4096}],
+                        }
+                    },
+                }
+            )
+        )
+        assert secret not in json.dumps(preview)
+        imported = preview["models"][0]
+        assert imported["supported"] is True
+        created = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={
+                "name": "Imported HTTP model",
+                "adapter_kind": "pi",
+                "model_id": imported["model_id"],
+                "base_url": imported["base_url"],
+                "response_mode": "text",
+                "parameters": {
+                    "provider": imported["provider"],
+                    "auth_mode": "api_key",
+                    "custom_model": imported["definition"],
+                },
+            },
+        )
+        assert created.status_code == 200
+        assert created.json()["parameters"]["custom_model"] == imported["definition"]
+        assert created.json()["secret_backend"] == "none"
+
+        poisoned = {**imported["definition"], "apiKey": secret}
+        rejected = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={
+                "name": "Rejected imported model",
+                "adapter_kind": "pi",
+                "model_id": imported["model_id"],
+                "base_url": imported["base_url"],
+                "parameters": {
+                    "provider": imported["provider"],
+                    "custom_model": poisoned,
+                },
+            },
+        )
+        assert rejected.status_code == 422
+        assert secret not in rejected.text
+
+
+def test_pi_local_credential_profile_reuses_key_without_copying(pi_agent_dir: Path) -> None:
+    (pi_agent_dir / "models.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "local-pi": {
+                        "api": "openai-completions",
+                        "baseUrl": "http://127.0.0.1:11434/v1",
+                        "models": [{"id": "qwen-local", "maxTokens": 4096}],
+                    }
+                }
+            }
+        )
+    )
+    (pi_agent_dir / "settings.json").write_text(
+        json.dumps({"enabledModels": ["local-pi/qwen-local"]})
+    )
+    (pi_agent_dir / "auth.json").write_text(
+        json.dumps({"local-pi": {"type": "api_key", "key": "pi-local-secret"}})
+    )
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        headers = csrf(client)
+        catalog = client.get("/api/pi/catalog")
+        assert catalog.status_code == 200
+        entry = next(
+            model for model in catalog.json()["models"] if model["provider"] == "local-pi"
+        )
+        credentials = client.get("/api/pi/credentials")
+        assert credentials.json() == {"providers": [{"provider": "local-pi", "types": ["api_key"]}]}
+        assert "pi-local-secret" not in credentials.text
+
+        payload = {
+            "name": "Pi 本机凭据模型",
+            "adapter_kind": "pi",
+            "model_id": entry["model_id"],
+            "base_url": entry["base_url"],
+            "parameters": {
+                "provider": "local-pi",
+                "auth_mode": "api_key",
+                "custom_model": entry["definition"],
+            },
+        }
+        created = client.post("/api/model-profiles", headers=headers, json=payload)
+        assert created.status_code == 200, created.text
+        profile = created.json()
+        assert profile["has_secret"] is True and profile["secret_backend"] == "pi"
+        assert "pi-local-secret" not in created.text
+
+        checked = client.post(f"/api/model-profiles/{profile['id']}/check", headers=headers)
+        assert checked.status_code == 200
+        assert checked.json()["health_status"] == "healthy"
+        assert checked.json()["health_details"]["credential_source"] == "pi_auth_file"
+
+        overridden = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={**payload, "base_url": "https://proxy.example/v1"},
+        )
+        assert overridden.status_code == 422
+        assert "pi-local-secret" not in overridden.text
+
+
+def test_pi_credential_creation_requires_login_and_exact_endpoint(pi_agent_dir: Path) -> None:
+    (pi_agent_dir / "auth.json").write_text(
+        json.dumps({"kimi-coding": {"type": "api_key", "key": "pi-kimi-secret"}})
+    )
+    (pi_agent_dir / "settings.json").write_text(json.dumps({"enabledModels": ["kimi-coding/k3"]}))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        headers = csrf(client)
+        missing = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={
+                "name": "无凭据模型",
+                "adapter_kind": "pi",
+                "model_id": "k3",
+                "parameters": {"provider": "another-provider", "auth_mode": "api_key"},
+            },
+        )
+        assert missing.status_code == 422
+        assert "没有 another-provider 的 API Key" in missing.text
+
+        catalog = client.get("/api/pi/catalog").json()
+        kimi = next(model for model in catalog["models"] if model["provider"] == "kimi-coding")
+        assert "definition" not in kimi
+        request_body = {
+            "name": "Kimi 本机凭据",
+            "adapter_kind": "pi",
+            "model_id": kimi["model_id"],
+            "parameters": {"provider": "kimi-coding", "auth_mode": "api_key"},
+        }
+        overridden = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={**request_body, "base_url": "https://proxy.example/v1"},
+        )
+        assert overridden.status_code == 422
+        assert "服务端地址" in overridden.text
+        accepted = client.post(
+            "/api/model-profiles",
+            headers=headers,
+            json={**request_body, "base_url": kimi["base_url"]},
+        )
+        assert accepted.status_code == 200, accepted.text
+        assert accepted.json()["secret_backend"] == "pi"

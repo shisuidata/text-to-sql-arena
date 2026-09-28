@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 
 export const repoRoot = resolve(process.cwd(), "..");
 export const evidenceRoot = resolve(repoRoot, "evidence");
-export const githubEvidenceRoot = "https://github.com/rockythink/text-to-sql-arena/blob/main/evidence";
+export const githubEvidenceRoot = "https://github.com/shisuidata/text-to-sql-arena/blob/main/evidence";
 
 export interface EvidenceIndexRun {
   bundle_sha256: string;

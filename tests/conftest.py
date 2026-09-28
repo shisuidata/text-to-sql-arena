@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import tempfile
@@ -12,6 +13,22 @@ import pytest
 TEST_VAR_DIR = Path(tempfile.mkdtemp(prefix="llm-test-pytest-"))
 os.environ["LLM_TEST_VAR_DIR"] = str(TEST_VAR_DIR)
 os.environ["LLM_TEST_DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_VAR_DIR / 'app.db'}"
+# Credentials are read from the local Pi config: tests never touch the developer's home.
+TEST_HOME = Path(tempfile.mkdtemp(prefix="llm-test-home-"))
+os.environ["HOME"] = str(TEST_HOME)
+_TEST_AGENT_DIR = TEST_HOME / ".pi" / "agent"
+_TEST_AGENT_DIR.mkdir(parents=True)
+(_TEST_AGENT_DIR / "auth.json").write_text(
+    json.dumps({"openai": {"type": "api_key", "key": "baseline-pi-key"}})
+)
+
+
+@pytest.fixture
+def pi_agent_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    directory = tmp_path / ".pi" / "agent"
+    directory.mkdir(parents=True)
+    return directory
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -27,3 +44,4 @@ def isolated_database() -> Iterator[None]:
     yield
     asyncio.run(engine.dispose())
     shutil.rmtree(TEST_VAR_DIR, ignore_errors=True)
+    shutil.rmtree(TEST_HOME, ignore_errors=True)

@@ -7,9 +7,10 @@
 ### 已实现
 
 - 创建、修改、软删除和列出模型配置。新建配置只能使用 `adapter_kind=pi` 与 `response_mode=text`；旧 `openai_compatible`/CLI 配置保持可见和可删除，但不能执行本地就绪检查或进入新运行。
-- 必填参数：`provider`、`auth_mode`（`oauth` 或 `api_key`）和固定 `timeout_seconds=180`；可选 `temperature`、`reasoning_effort`，API Key Provider 还可选 `max_tokens`。
-- GPT 订阅固定 `provider=openai-codex`、`auth_mode=oauth`，本地 catalog 包含 `gpt-5.6-luna` / `gpt-5.6-sol`，不允许 Base URL/API Key/`max_tokens`；输出上限由 Provider 管理。凭据可由支持的外部 Pi CLI 登录或既有 Codex 登录文件导入系统钥匙串。
-- API Key 模式可选 OpenAI、Anthropic、Google 或自由填写 Provider 标识，Base URL 可选；该列表是接入入口，不是完整模型目录承诺。API Key 只保存到系统钥匙串，或保存显式环境变量引用；HTTP/API 输出不返回明文。
+- 参数包含 `provider`、`auth_mode`（`oauth` 或 `api_key`）；界面固定 `timeout_seconds=180`。`reasoning_effort` 选项直接取 Pi 模型能力；Codex 协议不发送 `max_tokens`，其他受支持协议可配置输出上限。
+- 配置页默认只展示当前 Pi `enabledModels` 中的模型，按锁定内置目录和本机 `models.json` 解析 Provider、协议、默认端点与能力，支持搜索；没有启用名单时只展示默认模型和声明式自定义模型，不回退完整目录。仅由扩展注册而无法安全解析的显式模型保留为不可用项，不加载扩展。认证方式来自目录 Provider 的 API Key/OAuth 能力，不代表账号已取得权限。`openai-codex` 为 OAuth-only，不允许改变订阅端点，凭据只读本机 Pi 凭据文件（`~/.pi/agent/auth.json`，`openai-codex` 同时考虑既有 `~/.codex/auth.json`），评测台不刷新。
+- 本机 `~/.pi/agent/models.json` 声明式自定义模型随锁定目录解析，选择后保存规范化 `parameters.custom_model`。仅保留连接与能力白名单；`apiKey` 不导入，`!` 命令与环境插值不执行，提示词/工具/扩展不加载。三项 Completions 布尔兼容字段 `supportsStore`、`supportsDeveloperRole`、`supportsReasoningEffort` 可保留；自定义 headers、动态 OAuth、samplingParams 和其他兼容语义标为不支持，不静默替换协议。运行冻结解析后的定义，原文件后续变化不影响已保存配置或历史快照。
+- API Key 凭据只来自本机 Pi：`auth.json` 有该 Provider 的 `type=api_key` 条目时，评测台只保存 `pi-auth:<provider>` 引用，运行时读取凭据文件，不复制、不落盘，HTTP/API 输出不返回明文；该 provider/model 能在 Pi 目录解析出服务端地址时，该地址不可覆盖（覆盖即拒绝保存）。本机环回端点（localhost/127.0.0.1/::1）且 Pi 无凭据时不发送凭据，`secret_backend=none`。`GET /pi/credentials` 只披露 Provider 与凭据类型的存在性，不返回值。OAuth 凭据同样只读 Pi 凭据文件，评测台不刷新；过期或缺失时报错要求先回 Pi 刷新登录。
 - 可选配置 USD/百万 Token 的输入、缓存输入、缓存写入和输出价格及来源/生效日期；运行创建时冻结价格快照。
 - “检查本地配置”只验证本地 catalog、凭据、参数、Pi harness/bridge/policy 与隔离详情；不调用模型、不消耗生成，也不证明 Provider 可用。
 - 运行创建前要求所选配置启用、属于 Pi 且本地就绪检查仍有效。
@@ -19,38 +20,24 @@
 | 层 | 当前合同 |
 | --- | --- |
 | Node bridge | `runtime/pi` 固定 `@earendil-works/pi-ai` 0.85.1；stdin/stdout 传输单次请求和结果 |
-| Prompt | 使用评测引擎生成的固定 Prompt；单轮，不加载外部配置或会话 |
+| Prompt | 使用评测引擎生成的固定 Prompt；单轮，不自动加载个人配置或会话；显式导入只使用已校验的模型定义快照 |
 | 工具与重试 | 工具关闭、工具数 0、生成尝试上限 1；本地就绪检查不生成内容（实际计数 0），运行调用保存实际计数 |
 | 输出 | Pi 返回文本后进入现有 `query-plan-v1` 严格解析和 SQL 评测链路 |
-| OAuth | 仅 `openai-codex`；凭据文件是导入来源，运行使用系统钥匙串引用 |
-| API Key | OpenAI/Anthropic/Google/自定义 Provider；只有当前案例 Prompt 和调用参数离开进程 |
+| OAuth | 按 Pi Provider 的认证能力展示；`openai-codex` 为 OAuth-only；凭据只读 `~/.pi/agent/auth.json`（`openai-codex` 同时考虑既有 `~/.codex/auth.json`，取较新者），评测台不刷新，过期回 Pi 刷新登录；订阅端点不可覆盖 |
+| API Key | 仅 Pi 目录受支持模型（含本机声明式定义）；凭据为 `pi-auth:<provider>` 引用，运行时读本机 `auth.json`，环回端点无凭据时不发送凭据；只有当前案例 Prompt 和调用参数离开进程，目录与定义元数据不进入厂商请求 |
 
-每次真实调用在 `provider.requested` wire payload 与 `provider.completed` 证据中保存请求/解析模型身份、Provider request ID（若返回）、Token（若返回）、生成耗时和不含凭据的有效控制快照。已完成一次受控订阅 smoke：Pi 0.85.1、`openai-codex/gpt-5.6-luna`、既有 OAuth 凭据导入 keyring、单次请求、无工具，严格 JSON 中的 SQL `SELECT 1` 执行得到 `[(1,)]`；生成 2839 ms，usage 为 381 input / 66 output。该 smoke 没有创建 benchmark run 或历史记录，也不证明其他远端 Provider 已测试。
+每次真实调用在 `provider.requested` wire payload 与 `provider.completed` 证据中保存请求/解析模型身份、Provider request ID（若返回）、Token（若返回）、生成耗时、凭据来源（`credential_source`：`pi_auth_file` / `codex_auth_file` / `local_no_auth`；历史运行快照中的旧取值只读保留、不重算）和不含凭据的有效控制快照。已完成一次受控订阅 smoke：Pi 0.85.1、`openai-codex/gpt-5.6-luna`、使用既有 Pi 订阅登录凭据、单次请求、无工具，严格 JSON 中的 SQL `SELECT 1` 执行得到 `[(1,)]`；生成 2839 ms，usage 为 381 input / 66 output。该 smoke 没有创建 benchmark run 或历史记录，也不证明其他远端 Provider 已测试。
 
-## 2. 题库生命周期
+## 2. 只读题库与离线构建
 
-### 草稿
+- 产品仅展示随应用提供的已发布题库、版本、题意、维度、难度和内容哈希，供测评选择与结果复核。
+- 内置题库展示为“零售分析 SQL 题库”，版本号独立展示；内部标识 `retail-analytics-v1` 保持不变。
+- 不提供题库创建、复制草稿、源文件编辑、校验发布或挑战自检的 Web UI/HTTP API。已有草稿保留在本地数据库，但不出现在题库目录或测评选择中。
+- 雷达维度仍是不可变题库版本数据，历史版本可保留旧维度；已发布版本的 Prompt 预览 API 继续只读开放。
 
-- 创建题库和首个草稿版本。
-- 从任一版本克隆新草稿。
-- 修改 SQL Schema、Seed SQL、语义层、Prompt 模板和案例集合。
-- 雷达维度是题库版本数据，不是应用硬编码枚举；历史版本可保留旧维度。
-- 预览单案例实际 Prompt 和输出 JSON Schema。
+维护者的离线构建与应用 bootstrap 仍负责 Pydantic 源合同校验、执行 Schema/固定 Seed、提取结构、执行参考 SQL 生成金标、计算 SHA-256 并保存内容寻址产物。发布前回归验收另用完整评分器验证参考答案；构建本身不是模型能力测试。
 
-### 发布
-
-发布执行完整构建：
-
-1. Pydantic 严格校验源合同。
-2. 执行 Schema 与固定 Seed SQL。
-3. 固定 DuckDB 运行参数：UTC、单线程、关闭外部访问。
-4. 提取表、字段、主键、外键和语义关系快照。
-5. 对每个参考 SQL 执行与归一化，生成完整金标 JSON。
-6. 发布前回归验收另用完整评分器验证内置 v4 的 18 个参考答案全部 100 分；发布构建本身验证参考 SQL 可执行性并生成金标。
-7. 对规范化源内容计算 SHA-256 `content_hash`。
-8. 写入内容寻址目录并把版本设为 `published`。
-- 题库挑战检查可在最多 10 个临时数据变体上执行候选 SQL，验证“应正确/应错误”候选是否能被确定性比较器区分；不修改草稿或发布版本。
-发布版本不可原地修改。更新必须克隆成新版本。
+已发布版本不可原地修改。维护源数据变化必须产生新哈希和新版本，不改写旧题库或历史证据。固定数据变体挑战检查保留为内部质量验证能力，不作为用户产品入口。
 
 ## 3. 内置 Retail Analytics 题库
 
@@ -180,7 +167,8 @@
 - SSE 支持 `after_seq` 断线续传，并用持久化历史补齐订阅水位线前后的竞态。
 - 历史接口支持模型、案例、级别、事件类型、搜索词、offset 和 limit 筛选。
 - Provider delta 以 250 ms 缓冲，避免逐 token 写库。
-- 实时页支持自动跟随、筛选和大日志虚拟化。
+- 实时页默认以「模型输出」按模型和案例连续拼接片段，每栏独立选题或跟随最新题目；请求等待、生成、完成、失败和取消状态可见。深色阅读视图在 JSON 尚未完成时解码已收到的字段，展示规划、SQL、说明、假设，保留换行与缩进；可切换原始文本逐字核对，未知或不支持的格式不丢弃内容。耗时实时更新，Token 只展示已返回统计，不估算未返回用量。上滚暂停跟随但继续接收；深色「事件日志」保留筛选、虚拟化和原始明细，摘要保留空白且不截断。底层引擎身份留在技术信息中，不作为主界面品牌。
+- 首次读取按 after_seq 分页补齐全部历史，再从真实尾序号接续 SSE；重放去重，终态停止重连，历史失败可手动重试。状态轮询失败不遮挡已接收输出；刷新、失败和取消保留片段。诊断只展示已脱敏的结构化事件，不透传进程 stderr 或个人 Pi 会话。
 - 案例工作区展示规划、SQL、执行结果、差异和评分；参考 SQL/金标必须显式请求后才返回。
 
 ## 11. 报告与证据导出
@@ -192,21 +180,22 @@
 - 逐文件 SHA-256 与目录 `bundle_sha256`。
 - 校验器发现缺文件、新增未登记文件或摘要变化即失败。
 - 导出器脱敏常见 Provider 密钥、Authorization、项目根目录、用户主目录和应用临时路径。
-- 不导出原始 SQLite、WAL/SHM、Keychain 值、CLI Home 或二进制 DuckDB；DuckDB 可由公开 Schema/Seed 确定性重建。
+- 不导出原始 SQLite、WAL/SHM、Keychain 等密钥存储值（仅历史数据可能存在）、Pi 凭据文件或二进制 DuckDB；DuckDB 可由公开 Schema/Seed 确定性重建。
 - 终态运行可先只读预览脱敏报告、清单摘要和警告，再以预览摘要显式确认导出仅该运行和所属题库版本的 ZIP。
 - “确认并导出发布包”只生成临时下载文件：不替换 `evidence/`，不复制 SQLite，也不代表内容已经上线或完成公网部署。
 ## 12. Web UI
 
 - 模型配置、价格快照和健康状态。
-- 题库列表、Schema/Seed/Semantic/Cases 编辑器、实体关系图、Prompt 预览和发布。
-- 新建运行支持浏览器本地方案、题目子集与只读预检；本地就绪检查失效时不能开赛。
+- 只读题库说明：友好名称、独立版本号、最新发布版、题目范围及内容哈希；无草稿或编辑入口。
+- 新建评测支持浏览器本地方案、题目子集与只读预检；本地就绪检查失效时不能开始运行。
 - 实时页展示真实业务题意、全部作答与持久化日志；终态停止事件订阅，不持续重连。
-- 报告分“看比赛 / 看门道 / 查证据”；关键回合按全部计划尝试和题目权重计算，历史回放明确标识为回放。
-- 匿名竞猜揭晓前不展示身份、排名或分数；预测不计分。公开站关键题竞猜仅保存在浏览器，不生成票数。
+- 报告分“结果概览 / 逐题分析 / 配置与证据”；题目得分差异按全部计划尝试和题目权重计算，历史回放明确标识为回放。
+- 匿名预测显示结果前不展示身份、排名或分数；预测不计分。公开站关键题竞猜仅保存在浏览器，不生成票数。
 - 对照先核验题库、案例、attempts、协议、工具版本、endpoint 指纹和隔离控制；不一致时不输出进退结论。
 - 复测支持精确/当前配置、全部/失败未满分子集；导出发布包不代表部署。
-- 统一中性深色、实体分隔、青橙选手色、少字号档位；主要正文 16px、辅助信息 14px，保留焦点可见与 reduced-motion。
+- 统一采用 Shisui Design System，不提供深浅色切换：暖白页面、深海蓝标题与主按钮、麦穗金核心操作；宋体标题、黑体正文、等宽数字。主要正文 16px、辅助信息 14px，保留焦点可见与 reduced-motion。
 - 录屏模式只隐藏导航，保存在当前 tab 的 sessionStorage；方案保存在 localStorage，不包含密钥。
+- `frontend/src/tokens.css` 随项目保存官方品牌令牌，来源为 Hub 的 `shisui-design-system/cards/tokens.css`。报告、提示框及 SQL 证据对照共用这些令牌；品牌字体随本地静态资源分发。
 
 ## 13. 明确不支持
 

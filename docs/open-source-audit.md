@@ -298,7 +298,7 @@ uv export --frozen --no-dev --format requirements-txt \
 
 ## 8. 公开发布验证
 
-- 公开仓库：<https://github.com/rockythink/text-to-sql-arena>；可见性 `PUBLIC`，默认分支 `main`。
+- 初始公开仓库为 `rockythink/text-to-sql-arena`；当前规范地址为 <https://github.com/shisuidata/text-to-sql-arena>。可见性 `PUBLIC`，默认分支 `main`。
 - 初始公开提交：`e6494e4df634b2bf7c4df0467000939ca88ffe47`。
 - 远端 README、标准 MPL-2.0 `LICENSE` 和 `evidence/index.json` 均已读取验证；远端证据索引声明 `text-to-sql-evidence-v1`、2 suite / 18 run。
 - 远端 `LICENSE` SHA-256：`66a3107d5ad6a058aab753eaac2047ccb2ed0e39465dd0fe5844da3e300d5172`，与本地和 SPDX 标准文本一致。

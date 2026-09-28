@@ -40,7 +40,7 @@ for (const [file, title, description, order] of docs) {
   let body = source.replace(/^# .+?\n+/, "");
   body = body.replace(/\]\(\.\.\/evidence\/([^)]+)\)/g, (_, target) => {
     const view = target.endsWith("/") ? "tree" : "blob";
-    return `](https://github.com/rockythink/text-to-sql-arena/${view}/main/evidence/${target})`;
+    return `](https://github.com/shisuidata/text-to-sql-arena/${view}/main/evidence/${target})`;
   });
   body = body.replace(/\]\((?:\.\/)?([a-z0-9-]+)\.md(#[^)]*)?\)/gi, (_, slug, anchor = "") => `](../${slug}/${anchor})`);
   const frontmatter = `---\ntitle: ${title}\ndescription: ${description}\nsidebar:\n  order: ${order}\n---\n\n`;

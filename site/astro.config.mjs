@@ -18,11 +18,8 @@ export default defineConfig({
       favicon: "/favicon.svg",
       customCss: ["./src/styles/starlight.css"],
       social: [
-        { icon: "github", label: "GitHub", href: "https://github.com/rockythink/text-to-sql-arena" }
+        { icon: "github", label: "GitHub", href: "https://github.com/shisuidata/text-to-sql-arena" }
       ],
-      editLink: {
-        baseUrl: "https://github.com/rockythink/text-to-sql-arena/edit/main/docs/"
-      },
       lastUpdated: true,
       sidebar: [
         { label: "公开边界", slug: "docs" },

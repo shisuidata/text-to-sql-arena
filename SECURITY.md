@@ -13,7 +13,7 @@ SQL 擂台是单用户、本地优先的评测工具，默认只绑定 `127.0.0.
 
 核心安全边界：
 
-- Provider 密钥只通过环境变量引用或系统 Keychain 读取，不进入 profile、事件或公开证据；
+- 评测台不持有凭据：凭据由本机 Pi 管理（`~/.pi/agent/auth.json`，0600 明文；`openai-codex` 可用既有 `~/.codex/auth.json`），信任边界下移到 Pi；评测台只保存 `pi-auth:<provider>` 引用，运行时只读、不复制、不写入、不刷新，密钥值不进入 profile、事件或公开证据；
 - 模型不接收 reference SQL、gold result、金标 AST 或评分答案；
 - SQL 先经过 SQLGlot 只读 AST 守卫，再在独立进程的只读 DuckDB 中执行；
 - Codex CLI 在 macOS Seatbelt 中运行，项目、SSH 目录和默认用户文件读取被拒绝；

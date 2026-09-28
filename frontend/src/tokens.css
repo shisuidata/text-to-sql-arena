@@ -1,0 +1,182 @@
+/* ============================================================
+   拾穗数据 · Design Tokens
+   "拾穗" — gleaning, diligent harvest. 深蓝 · 暖白 · 麦穗金
+   ============================================================ */
+
+:root {
+  /* ---------- Color: Brand ---------- */
+  /* 深海蓝 - 专业、可信、数据感 */
+  --sh-ink-50:  #F3F6FA;
+  --sh-ink-100: #E1E8F1;
+  --sh-ink-200: #C4D1E3;
+  --sh-ink-300: #92A6C1;
+  --sh-ink-400: #5E7698;
+  --sh-ink-500: #3B5578;   /* 辅助蓝 */
+  --sh-ink-600: #253E63;
+  --sh-ink-700: #172A49;   /* 主品牌色 · 深海蓝 */
+  --sh-ink-800: #0F1E38;
+  --sh-ink-900: #0A1528;
+
+  /* 麦穗金 - 温暖、收获、点睛用色 */
+  --sh-wheat-50:  #FBF6EC;
+  --sh-wheat-100: #F5EAD0;
+  --sh-wheat-200: #EBD5A0;
+  --sh-wheat-300: #DEBA6A;
+  --sh-wheat-400: #C99A3D;   /* 主麦穗金 */
+  --sh-wheat-500: #A87D28;
+  --sh-wheat-600: #86621D;
+
+  /* 暖白 - 背景、页面、纸张 */
+  --sh-paper:    #FBF8F3;   /* 主暖白 · 页面背景 */
+  --sh-paper-2:  #F5F0E6;   /* 次级暖白 · 区块 */
+  --sh-paper-3:  #EDE5D3;   /* 卡片分隔、边界 */
+  --sh-canvas:   #FFFFFF;   /* 纯白 · 卡片表面 */
+
+  /* ---------- Color: Neutrals ---------- */
+  --sh-gray-50:  #F7F5F0;
+  --sh-gray-100: #EDE9E0;
+  --sh-gray-200: #D9D3C5;
+  --sh-gray-300: #B8B0A0;
+  --sh-gray-400: #8C8578;
+  --sh-gray-500: #615C52;
+  --sh-gray-600: #403D37;
+  --sh-gray-700: #2A2824;
+  --sh-gray-900: #16150F;
+
+  /* ---------- Color: Semantic ---------- */
+  --sh-success: #2E7D5B;   /* 偏橄榄的绿，和暖白协调 */
+  --sh-success-bg: #E6F0E9;
+  --sh-warning: #C99A3D;   /* 复用麦穗金 */
+  --sh-warning-bg: #FBF1DA;
+  --sh-danger:  #B63A2F;   /* 砖红，非鲜红 */
+  --sh-danger-bg: #F6E1DD;
+  --sh-info:    #3B5578;   /* 复用辅助蓝 */
+  --sh-info-bg: #E1E8F1;
+
+  /* ---------- Color: Data Viz (for charts) ---------- */
+  /* 8-color categorical — 以深蓝为首，麦穗金为副，其余为和谐辅色 */
+  --sh-viz-1: #172A49;   /* 深海蓝 */
+  --sh-viz-2: #C99A3D;   /* 麦穗金 */
+  --sh-viz-3: #3B5578;   /* 辅助蓝 */
+  --sh-viz-4: #8C6A3E;   /* 栗棕 */
+  --sh-viz-5: #4E7A7A;   /* 灰青 */
+  --sh-viz-6: #B63A2F;   /* 砖红 */
+  --sh-viz-7: #92A6C1;   /* 淡蓝灰 */
+  --sh-viz-8: #DEBA6A;   /* 浅金 */
+
+  /* ---------- Text ---------- */
+  --sh-text:        var(--sh-gray-900);   /* 正文 */
+  --sh-text-muted:  var(--sh-gray-500);   /* 次要说明 */
+  --sh-text-subtle: var(--sh-gray-400);   /* 三级、元信息 */
+  --sh-text-invert: var(--sh-paper);      /* 深底上的文字 */
+  --sh-text-brand:  var(--sh-ink-700);    /* 品牌色标题 */
+  --sh-link:        var(--sh-ink-600);
+
+  /* ---------- Border ---------- */
+  --sh-border:        var(--sh-paper-3);   /* 默认分隔线 */
+  --sh-border-strong: var(--sh-gray-200);  /* 强分隔 */
+  --sh-border-ink:    var(--sh-ink-700);   /* 强调边框 */
+
+  /* ---------- Typography ---------- */
+  --sh-font-sans: "Source Han Sans CN", "Noto Sans SC", "PingFang SC",
+                  "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --sh-font-serif: "Source Han Serif CN", "Noto Serif SC", "Songti SC",
+                   "Source Han Serif", "Songti TC", serif;
+  --sh-font-mono: "JetBrains Mono", "SF Mono", "Menlo", "Consolas",
+                  "Source Han Sans CN", monospace;
+  --sh-font-number: "IBM Plex Sans", "Inter", ui-sans-serif, system-ui, sans-serif;
+
+  /* Type scale — 基于 16px 的模块化比例 1.25 */
+  --sh-fs-micro: 11px;   /* 表格元信息、角标 */
+  --sh-fs-xs:    12px;   /* 次要说明 */
+  --sh-fs-sm:    13px;   /* 辅助文字、表格 */
+  --sh-fs-base:  14px;   /* 正文（数据产品密度） */
+  --sh-fs-md:    16px;   /* 阅读型正文（文档） */
+  --sh-fs-lg:    18px;
+  --sh-fs-xl:    20px;
+  --sh-fs-2xl:   24px;
+  --sh-fs-3xl:   30px;
+  --sh-fs-4xl:   38px;
+  --sh-fs-5xl:   48px;
+  --sh-fs-6xl:   64px;
+  --sh-fs-display: 80px;
+
+  /* Line heights */
+  --sh-lh-tight:   1.2;
+  --sh-lh-snug:    1.35;
+  --sh-lh-normal:  1.55;
+  --sh-lh-relaxed: 1.75;   /* 中文阅读推荐 */
+
+  /* Font weights */
+  --sh-fw-light:    300;
+  --sh-fw-regular:  400;
+  --sh-fw-medium:   500;
+  --sh-fw-semibold: 600;
+  --sh-fw-bold:     700;
+  --sh-fw-heavy:    900;
+
+  /* Letter spacing */
+  --sh-ls-tight:  -0.02em;
+  --sh-ls-normal: 0;
+  --sh-ls-wide:   0.04em;
+  --sh-ls-wider:  0.12em;   /* 用于全大写标签 */
+
+  /* ---------- Spacing (4px base) ---------- */
+  --sh-s-0:   0;
+  --sh-s-1:   4px;
+  --sh-s-2:   8px;
+  --sh-s-3:   12px;
+  --sh-s-4:   16px;
+  --sh-s-5:   20px;
+  --sh-s-6:   24px;
+  --sh-s-8:   32px;
+  --sh-s-10:  40px;
+  --sh-s-12:  48px;
+  --sh-s-16:  64px;
+  --sh-s-20:  80px;
+  --sh-s-24:  96px;
+  --sh-s-32:  128px;
+
+  /* ---------- Radius ---------- */
+  --sh-r-xs: 2px;
+  --sh-r-sm: 4px;
+  --sh-r-md: 6px;    /* 默认 */
+  --sh-r-lg: 10px;
+  --sh-r-xl: 14px;
+  --sh-r-2xl: 20px;
+  --sh-r-full: 9999px;
+
+  /* ---------- Shadow ---------- */
+  /* 基于深蓝 ink-900 的柔和阴影，避免纯黑在暖白上显脏 */
+  --sh-shadow-xs: 0 1px 2px rgba(10, 21, 40, 0.06);
+  --sh-shadow-sm: 0 2px 4px rgba(10, 21, 40, 0.06), 0 1px 2px rgba(10, 21, 40, 0.04);
+  --sh-shadow-md: 0 4px 12px rgba(10, 21, 40, 0.08), 0 2px 4px rgba(10, 21, 40, 0.04);
+  --sh-shadow-lg: 0 10px 28px rgba(10, 21, 40, 0.10), 0 4px 10px rgba(10, 21, 40, 0.05);
+  --sh-shadow-xl: 0 20px 48px rgba(10, 21, 40, 0.14), 0 8px 16px rgba(10, 21, 40, 0.06);
+
+  /* 内阴影 — 常用于输入框 focus */
+  --sh-ring-brand: 0 0 0 3px rgba(23, 42, 73, 0.15);
+  --sh-ring-wheat: 0 0 0 3px rgba(201, 154, 61, 0.25);
+  --sh-ring-danger: 0 0 0 3px rgba(182, 58, 47, 0.20);
+
+  /* ---------- Motion ---------- */
+  --sh-ease-out:    cubic-bezier(0.16, 1, 0.3, 1);
+  --sh-ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --sh-ease-snap:   cubic-bezier(0.34, 1.56, 0.64, 1);
+  --sh-dur-fast:   120ms;
+  --sh-dur-base:   200ms;
+  --sh-dur-slow:   320ms;
+
+  /* ---------- Z-index ---------- */
+  --sh-z-base: 1;
+  --sh-z-sticky: 100;
+  --sh-z-dropdown: 200;
+  --sh-z-modal: 300;
+  --sh-z-toast: 400;
+
+  /* ---------- Layout ---------- */
+  --sh-container-sm: 720px;
+  --sh-container-md: 960px;
+  --sh-container-lg: 1200px;
+  --sh-container-xl: 1440px;
+}

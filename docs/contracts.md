@@ -119,14 +119,14 @@ sort_order: positive integer # 版本内唯一
 
 - `profile_name_snapshot`
 - `adapter_kind_snapshot`（新运行固定 `pi`）
-- `base_url_snapshot`（仅 API Key 模式可用）
+- `base_url_snapshot`（API Key 端点；OAuth 显式内置覆盖只允许与原始目录一致的端点）
 - `response_mode_snapshot`（新运行固定 `text`）
 - `requested_model_id`
-- `parameters_snapshot_json`：`provider`、`auth_mode`、固定 `timeout_seconds=180`，以及可选 `temperature`/`reasoning_effort`；`max_tokens` 仅 API Key Provider 可选，`openai-codex` 明确拒绝并由 Provider 管理输出上限
+- `parameters_snapshot_json`：`provider`、`auth_mode`、`timeout_seconds`（界面固定 180，API 可显式配置），以及可选 `temperature`/`reasoning_effort`/`max_tokens`；Codex 协议拒绝 `max_tokens`，输出上限由 Provider 管理。本机声明式定义还冻结已校验的 `custom_model` 定义与 Pi 来源版本
 - `pricing_snapshot_json`（USD/百万 Token 的可选价格快照）
-- `api_key_ref_snapshot`（仅引用，不是密钥；OAuth/API Key 明文都不进入报告）
+- `api_key_ref_snapshot`（仅引用，不是密钥；新建配置只会是 `pi-auth:<provider>` 或环回无凭据时的 `null`；历史快照中的 `keyring:` / `env:` 旧值只读保留、不重算；OAuth/API Key 明文都不进入报告）
 - `cli_version_snapshot`（Pi bridge/harness 版本；字段名为历史兼容保留）
-- `isolation_snapshot_json`（harness/policy、无工具、单次生成、上下文、Prompt 摘要、Provider/认证、模型身份来源与有效参数）
+- `isolation_snapshot_json`（harness/policy、无工具、单次生成、上下文、Prompt 摘要、Provider/认证、凭据来源 `credential_source`（新值为 `pi_auth_file` / `codex_auth_file` / `local_no_auth`，历史值只读保留）、模型身份来源与有效参数）
 
 运行结果：
 
@@ -202,7 +202,8 @@ sort_order: positive integer # 版本内唯一
 - message/payload 入库前递归脱敏；
 - `model_run_id` 和 `case_run_id` 只在对应作用域事件中填写；
 - SSE 的事件名等于 `event_type`；
-- 客户端使用 `after_seq` 恢复，不能按时间戳去重。
+- 客户端使用 `after_seq` 恢复，不能按时间戳去重；首次历史读取补齐分页后再从实际尾序号订阅，旧/重复序号不再消费，终态关闭订阅与重连定时器。
+- 实时、历史和 SSE 补发的 `created_at` 均带 UTC 时区；SQLite 读出的无时区日期按入库 UTC 语义恢复，避免刷新或重连后的耗时出现本地时区偏移。
 
 ### 事件类型
 
@@ -245,25 +246,28 @@ sort_order: positive integer # 版本内唯一
 
 | 方法 | 路径 | 合同 |
 | --- | --- | --- |
-| GET | `/model-profiles` | 列出未软删除配置；只返回 `has_secret` 和 secret backend |
-| POST | `/model-profiles` | 创建配置；明文 API Key 只进入密钥存储 |
-| PATCH | `/model-profiles/{id}` | 修改当前配置，不改历史快照 |
-| DELETE | `/model-profiles/{id}` | 软删除；运行引用保留 |
+| GET | `/pi/catalog` | `{version, models}`；读取本机 Pi `settings.json` 的 `enabledModels`，从锁定目录与安全解析的本机 `models.json` 取定义；不读凭据、不加载扩展、不发网络 |
+| GET | `/pi/credentials` | `{providers: [{provider, types}]}`；只读取本机 Pi `auth.json` 中存在的 Provider 与凭据类型（`openai-codex` 同时考虑既有 `~/.codex/auth.json`），只存在性、不返回值、不写入任何凭据存储 |
+| GET | `/model-profiles` | 列出未软删除配置；只返回 `has_secret` 和 secret backend（新配置只会是 `pi` / `none`；历史值 `keyring` / `environment` 仅用于展示旧数据） |
+| POST | `/model-profiles` | 创建配置；服务端解析 `pi_credential_reference`：凭据缺失 → 422 `provider_auth_error`，环回端点无凭据 → `api_key_ref=null`，有凭据时保存 `pi-auth:<provider>` 引用 |
+| PATCH | `/model-profiles/{id}` | 修改当前配置，不改历史快照；`parameters` / `model_id` / `base_url` 变更时重新解析凭据引用并写回 `api_key_ref`，失败即 422 |
+| DELETE | `/model-profiles/{id}` | 软删除；运行引用保留；不触碰任何凭据存储 |
 | POST | `/model-profiles/{id}/check` | 只检查本地 catalog、凭据、参数和 Pi bridge 就绪状态；不生成内容、不证明 Provider 可用 |
 
-新建 profile 合同：`adapter_kind="pi"`、`response_mode="text"`。`parameters.provider` 为非空字符串，`parameters.auth_mode` 为 `oauth|api_key`，`parameters.timeout_seconds=180`。`openai-codex` 只允许 OAuth 且拒绝 Base URL/API Key/`max_tokens`，输出上限由 Provider 管理；API Key 模式可使用 OpenAI、Anthropic、Google 或自定义 Provider 标识，`api_key` 与 `api_key_env` 互斥。旧适配器记录仍可由 GET/DELETE 访问；前端不提供编辑或检查，并禁止其进入 preflight 和新运行。OAuth 本地检查只从支持的外部 Pi CLI 或既有 Codex 登录凭据文件导入系统钥匙串，不生成内容，也没有独立 auth API。
+目录条目包含 `provider`、`model_id`、`name`、`api`、`base_url`、`context_window`、`max_tokens`、`reasoning_levels`、`auth_modes`、`supported` 和不可用原因。本机声明式定义的安全可用条目附加 `definition`，保存为 `parameters.custom_model`；无效端点不回显。名单支持通配匹配、去重与推理档位后缀，保留配置顺序；未设置 `enabledModels` 时只取默认模型和声明式自定义模型，显式空名单或没有配置时返回空列表，不回退完整目录。无法解析的显式模型标为不可用，不猜测协议与端点。目录可用性不是账号权限证明。
+
+声明式定义保存沿用 `POST /model-profiles`：目录解析出的定义放入 `parameters.custom_model`，模型 ID、Provider 和 Base URL 必须与定义一致。定义包含 `kind`（`custom` / `builtin_override`）、模型连接与能力字段、白名单 `compat` 及 `source={format: pi-models-json, piVersion}`，未知字段拒绝。价格不从定义文件或目录自动应用，OAuth 不接受 API Token 计价。运行继续冻结参数快照，不读取源文件的后续变化。
+
+新建 profile 合同：`adapter_kind="pi"`、`response_mode="text"`。`parameters.provider` 为非空字符串，`parameters.auth_mode` 为 `oauth|api_key`，界面固定 `parameters.timeout_seconds=180`。`openai-codex` 只允许 OAuth，拒绝 API Key/`max_tokens` 和订阅端点变更。创建与 PATCH 时服务端执行 `pi_credential_reference(provider, model_id, base_url, auth_mode)`：`auth_mode=api_key` 要求本机 Pi `auth.json` 有该 Provider 的 `type=api_key` 条目，`auth_mode=oauth` 要求 `type=oauth` 条目（`openai-codex` 额外允许既有 `~/.codex/auth.json`）；凭据缺失 → 422 `provider_auth_error`；本机环回端点（localhost/127.0.0.1/::1）且无凭据 → `api_key_ref=null`，本地模型不发送凭据；有凭据且该 provider/model 能在 Pi 目录解析出服务端地址时，`base_url` 必须与其一致，不一致 → 422（不接受端点覆盖，目录无法解析时跳过该比较）。有凭据时保存 `api_key_ref=pi-auth:<provider>` 引用，运行时读取凭据文件，评测台不复制、不写入、不刷新。旧适配器记录仍可由 GET/DELETE 访问；前端不提供编辑或检查，并禁止其进入 preflight 和新运行。OAuth 本地检查只读凭据文件验证存在性与有效期，不生成内容，也没有独立 auth API；过期或缺失时报错要求先回 Pi 刷新登录（GPT 也可使用既有 Codex 登录）。
 
 ### 题库
 
 | 方法 | 路径 | 合同 |
 | --- | --- | --- |
-| GET | `/suites` | 返回题库、版本、结构和案例；这是作者/本地管理接口，不是模型 Prompt |
-| POST | `/suites` | 创建题库和草稿 |
-| POST | `/suites/{id}/clone?source_version_id=` | 克隆到新草稿 |
-| PATCH | `/suite-versions/{id}` | 只允许修改 draft |
-| POST | `/suite-versions/{id}/publish` | 确定性构建、校验、哈希和发布 |
-| GET | `/suite-versions/{id}/prompt-preview?case_id=` | 返回实际 Prompt 和输出 Schema，不返回参考 SQL |
-| POST | `/suite-versions/{id}/challenge-check` | 在临时 DuckDB 数据变体上检验候选 SQL 能否区分正确/错误答案；只读且不修改题库 |
+| GET | `/suites` | 仅返回含已发布版本的题库，版本列表排除草稿；保留内部 name、结构和案例字段，不是模型 Prompt |
+| GET | `/suite-versions/{id}/prompt-preview?case_id=` | 只读返回已发布版本的实际 Prompt 和输出 Schema，不返回参考 SQL；草稿返回 404 |
+
+题库创建、克隆、PATCH、校验发布与 challenge-check 不再提供 HTTP 入口；旧写请求返回 404/405，不迁移为其他写操作。离线构建/启动导入属于维护基础设施，不属于用户产品功能。报告发布预览与证据 ZIP 导出保留，见下表。
 
 ### 运行
 

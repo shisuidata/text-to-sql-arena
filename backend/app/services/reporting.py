@@ -6,8 +6,10 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import sqlglot
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlglot.errors import ParseError
 
 from backend.app.config import settings
 from backend.app.models import (
@@ -35,6 +37,18 @@ class EvidenceLookupError(LookupError):
     def __init__(self, code: str, message: str):
         self.code = code
         super().__init__(message)
+
+def _format_reference_sql(reference_sql: str) -> str | None:
+    try:
+        statements = [
+            statement for statement in sqlglot.parse(reference_sql, read="duckdb")
+            if statement is not None
+        ]
+    except ParseError:
+        return None
+    if len(statements) != 1 or not reference_sql.strip():
+        return None
+    return statements[0].sql(dialect="duckdb", pretty=True)
 
 
 def _billable_pricing(model: ModelRun) -> dict[str, Any] | None:
@@ -353,7 +367,11 @@ async def build_case_evidence(
         ),
         "expected_digest": case_run.expected_digest,
         "actual_digest": case_run.actual_digest,
-        "result_preview": case_run.result_preview_json,
+        "result_preview": (
+            dict(case_run.result_preview_json)
+            if case_run.result_preview_json is not None
+            else None
+        ),
         "score": case_run.score_breakdown_json,
         "error_code": case_run.error_code,
         "error_message": case_run.error_message,
@@ -363,6 +381,9 @@ async def build_case_evidence(
         "suite_content_hash": run.suite_content_hash,
     }
     if not include_reference:
+        if result["result_preview"] is not None:
+            result["result_preview"].pop("missing", None)
+            result["result_preview"].pop("extra", None)
         return result
     if case_run.status != "completed":
         raise EvidenceLookupError("reference_not_available", "仅完成 case 可查看参考证据")
@@ -372,6 +393,7 @@ async def build_case_evidence(
         raise EvidenceLookupError("gold_artifact_missing", "固定金标结果资产不存在")
     gold = json.loads(gold_path.read_text(encoding="utf-8"))
     result["reference_sql"] = case.reference_sql
+    result["formatted_reference_sql"] = _format_reference_sql(case.reference_sql)
     result["expected_result_preview"] = {
         "columns": gold["columns"],
         "rows": gold["rows"][:200],

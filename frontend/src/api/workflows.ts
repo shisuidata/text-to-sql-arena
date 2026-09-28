@@ -67,49 +67,6 @@ export interface PublicationPreview {
   warnings: string[];
 }
 
-export interface ChallengeVariant {
-  name: string;
-  seed_sql: string;
-}
-
-export interface ChallengeCandidate {
-  name: string;
-  sql: string;
-  expected: "correct" | "incorrect";
-}
-
-export interface ChallengeCheckRequest {
-  case_key: string;
-  variants: ChallengeVariant[];
-  candidates: ChallengeCandidate[];
-}
-
-export interface ChallengeCandidateResult {
-  name: string;
-  expected: "correct" | "incorrect";
-  status: "matched" | "different" | "execution_error";
-  result_correct: boolean;
-  distinguished: boolean;
-  error_code: string | null;
-  error_message: string | null;
-  diff: Record<string, unknown> | null;
-}
-
-export interface ChallengeCheckResult {
-  case_key: string;
-  variants: Array<{
-    name: string;
-    baseline: ChallengeCandidateResult;
-    candidates: ChallengeCandidateResult[];
-  }>;
-  summary: {
-    candidate_count: number;
-    passed_candidates: number;
-    passed: boolean;
-    indistinguishable: string[];
-    execution_errors: string[];
-  };
-}
 
 export function preflightRun(payload: PreflightRequest): Promise<PreflightResponse> {
   return request<PreflightResponse>("/api/runs/preflight", {
@@ -137,15 +94,5 @@ export function exportPublicationPackage(
   return requestBlob(`/api/runs/${runId}/publication-export`, {
     method: "POST",
     body: JSON.stringify({ preview_digest: previewDigest }),
-  });
-}
-
-export function challengeCheck(
-  suiteVersionId: number,
-  payload: ChallengeCheckRequest,
-): Promise<ChallengeCheckResult> {
-  return request<ChallengeCheckResult>(`/api/suite-versions/${suiteVersionId}/challenge-check`, {
-    method: "POST",
-    body: JSON.stringify(payload),
   });
 }

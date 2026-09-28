@@ -24,10 +24,10 @@ const base = import.meta.env.BASE_URL;
     <div class="site-shell">
       <header class="masthead">
         <a class="wordmark" href={base} aria-label="拾穗数据工作室 SQL 模型评测台首页"><span class="wordmark-mark">拾</span><span><b>拾穗数据工作室</b><small>SQL 模型评测台</small></span></a>
-        <nav aria-label="主导航"><a class:list={[{ active: current === "runs" }]} href={`${base}runs/`}>评测报告</a><a class:list={[{ active: current === "benchmarks" }]} href={`${base}benchmarks/`}>测试用例</a><a class:list={[{ active: current === "docs" }]} href={`${base}docs/`}>评测方法</a><a href="https://github.com/rockythink/text-to-sql-arena">源与证据 ↗</a></nav>
+        <nav aria-label="主导航"><a class:list={[{ active: current === "runs" }]} href={`${base}runs/`}>评测报告</a><a class:list={[{ active: current === "benchmarks" }]} href={`${base}benchmarks/`}>测试用例</a><a class:list={[{ active: current === "docs" }]} href={`${base}docs/`}>评测方法</a><a href="https://github.com/shisuidata/text-to-sql-arena">源与证据 ↗</a></nav>
       </header>
       <main id="main"><slot /></main>
-      <footer class="site-footer"><p><b>拾穗数据工作室</b></p><a href={`${base}docs/methodology/`}>评分方法</a><a href="https://github.com/rockythink/text-to-sql-arena">GitHub 仓库 ↗</a></footer>
+      <footer class="site-footer"><p><b>拾穗数据工作室</b></p><a href={`${base}docs/methodology/`}>评分方法</a><a href="https://github.com/shisuidata/text-to-sql-arena">GitHub 仓库 ↗</a></footer>
     </div>
   </body>
 </html>

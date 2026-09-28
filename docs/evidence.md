@@ -114,7 +114,8 @@ evidence/
 | `var/app.db`, WAL, SHM | 含当前密钥引用、健康详情、绝对路径和内部状态 | 脱敏 JSON 报告/事件/案例 |
 | `var/suites/**/warehouse.duckdb` | 二进制、可由源重建 | Schema、Seed、manifest、gold |
 | `var/cli-homes` | 可能含认证、history、路径 | 隔离快照摘要 |
-| Keychain/API Key | 凭据 | `has_secret`/backend 类型，不含值 |
+| Keychain 等密钥存储值与 API Key 明文 | 凭据（仅历史数据可能存在 Keychain 值） | `has_secret`/backend 类型，不含值 |
+| Pi `auth.json` | 本机凭据 | 只披露 Provider 与凭据类型；引用形式 `pi-auth:<provider>`，不含值 |
 | 环境变量与 shell 配置 | 凭据和个人信息 | 受控环境键合同 |
 | 数据库备份 | 与原始 DB 同风险 | 公开证据包 |
 
@@ -222,7 +223,7 @@ uv run pytest -q tests/test_retail_suite.py tests/test_result_compare.py tests/t
 
 - Pi harness/bridge/policy 版本、Provider、认证模式、请求模型和响应模式；
 - 固定 Prompt、显式生成参数、单轮/无工具/生成尝试次数与系统 Prompt 摘要；
-- Provider 实际请求元数据仅在 bridge 返回且通过脱敏时保存；不会保存 OAuth/API Key、Authorization、keyring 引用或凭据文件内容。
+- Provider 实际请求元数据仅在 bridge 返回且通过脱敏时保存；不会保存 OAuth/API Key、Authorization 或凭据文件内容（凭据引用仅为 `pi-auth:<provider>` 形式，历史快照中的旧引用值只读保留）。
 
 Run 1—18 及其他既有历史证据按原字节、原适配器和原比较标签保留，不补写 Pi 字段，也不会根据现有 Prompt 反向伪造底层请求。新报告可以显示 `controlled_harness` 以及安全的 Provider/认证/有效控制，但“统一 harness”不表示同一端点或同一模型。
 

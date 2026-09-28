@@ -1,31 +1,12 @@
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from backend.app.adapters.base import AdapterHealth, AdapterProfile
+from backend.app.adapters.pi import PI_CREDENTIAL_PREFIX
 from backend.app.adapters.registry import AdapterRegistry, adapter_registry
 from backend.app.models import ModelProfile
-from backend.app.security import SecretStore, secret_store
-
-_ENV_NAME = re.compile(r"^[A-Z_][A-Z0-9_]*$")
-
-
-def secret_reference(
-    api_key: str | None,
-    api_key_env: str | None,
-    store: SecretStore = secret_store,
-) -> str | None:
-    if api_key:
-        if not store.available():
-            raise RuntimeError("系统钥匙串不可用；只能填写环境变量名，绝不回退到明文存储")
-        return store.put(api_key)
-    if api_key_env:
-        if not _ENV_NAME.fullmatch(api_key_env):
-            raise ValueError("环境变量名必须为大写字母、数字和下划线")
-        return f"env:{api_key_env}"
-    return None
 
 
 def profile_snapshot(profile: ModelProfile) -> AdapterProfile:
@@ -87,6 +68,8 @@ def profile_public(profile: ModelProfile) -> dict[str, Any]:
         if reference.startswith("keyring:")
         else "environment"
         if reference.startswith("env:")
+        else "pi"
+        if reference.startswith(PI_CREDENTIAL_PREFIX)
         else "none"
     )
     historical = profile.adapter_kind != "pi"

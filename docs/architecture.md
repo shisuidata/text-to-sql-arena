@@ -64,11 +64,13 @@ flowchart LR
 - `check(profile) -> AdapterHealth`
 - `generate(profile, request, emit, cancel) -> GenerationResponse`
 
-新运行只注册 Pi 适配器。运行引擎依赖标准化结果：原始文本、解析输出、请求/解析模型身份、Token、Provider request ID、耗时和协议严格性。Pi bridge 固定 `@earendil-works/pi-ai` 0.85.1，负责 Provider 协议和认证差异；它不是 coding-agent，也不加载工具、配置或会话。
+新运行只注册 Pi 适配器。运行引擎依赖标准化结果：原始文本、解析输出、请求/解析模型身份、Token、Provider request ID、耗时和协议严格性。Pi bridge 固定 `@earendil-works/pi-ai` 0.85.1，负责 Provider 协议和认证差异；它不是 coding-agent，执行不自动加载个人配置、工具或会话。
+
+模型选择只展示本机 `~/.pi/agent/settings.json` 的 `enabledModels`，用锁定 bridge 内置目录与本机 `models.json` 的安全白名单定义解析能力；不发远端发现请求、不执行扩展，也没有手工兼容端点或上传 models.json 入口。未设置名单时仅展示默认模型和声明式自定义模型，空名单不会退回完整目录；未解析的显式模型保留为禁用项。本机声明式定义在保存时写入 `parameters.custom_model`，随运行参数冻结，原文件后续变化不影响历史配置。执行按目录协议选择 Pi API 模块，保留本机认证与评测参数的隔离；定义元数据只用于审计，不进入 wire 参数。
 
 ### `SuiteSource -> PublishedSuite`
 
-发布接口把可编辑源一次性转换为：
+维护者离线构建与应用 bootstrap 把题库源一次性转换为：
 
 - 内容哈希；
 - 结构快照；
@@ -76,7 +78,7 @@ flowchart LR
 - DuckDB 仓库；
 - 构建清单。
 
-运行只读取发布产物，不重新解释草稿。
+运行只读取发布产物，不重新解释草稿。产品只开放已发布题库说明与测评选择，不提供创建、克隆、编辑、校验发布或挑战自检的页面/写入接口；既有草稿和历史证据保留。
 
 ### `EvaluationOutcome`
 
@@ -128,8 +130,8 @@ stateDiagram-v2
 
 - 新 profile 固定 `adapter_kind=pi`、`response_mode=text`；Provider、认证、180 秒超时和可选生成参数写入 `parameters`。
 - 每个案例是单轮、固定 Prompt、无工具、无重试调用；Node bridge 不接触题库路径、参考 SQL 或评分规则。
-- GPT 订阅使用 `provider=openai-codex` 与 `auth_mode=oauth`，本地 catalog 包含 `gpt-5.6-luna` / `gpt-5.6-sol`，不接受 Base URL、API Key 或 `max_tokens`；输出上限由 Provider 管理。检查只验证本地 catalog/凭据/参数，不生成内容或证明 Provider 可用。凭据可由支持的外部 Pi CLI 登录或既有 Codex 登录文件导入系统钥匙串；不读取配置、工具或会话。
-- API Key 模式支持 OpenAI、Anthropic、Google 和自定义 Provider 标识；这只描述接入入口，不承诺覆盖各 Provider 的全部模型目录。
+- GPT 订阅使用 `provider=openai-codex` 与 `auth_mode=oauth`，本地 catalog 包含 `gpt-5.6-luna` / `gpt-5.6-sol`，不接受 Base URL、API Key 或 `max_tokens`；输出上限由 Provider 管理。检查只验证本地 catalog/凭据/参数，不生成内容或证明 Provider 可用。凭据只读 `~/.pi/agent/auth.json`（`openai-codex` 同时考虑既有 `~/.codex/auth.json`，取较新者）；评测台不复制、不写入、不刷新，过期或缺失时报错要求先回 Pi 刷新登录；不读取配置、工具或会话。
+- API Key 模式支持 Pi 目录已启用名单内的 OpenAI、Anthropic、Google 等 Provider；这只描述接入入口，不承诺覆盖各 Provider 的全部模型目录。评测台存储的只是 `pi-auth:<provider>` 引用：运行时读取本机 `auth.json`，不复制、不写入；有凭据且目录可解析出服务端地址时该地址不可覆盖；本机环回端点且 Pi 无凭据时不发送凭据。
 - isolation_snapshot_json 仅是运行创建时的配置/本地预检快照，不证明实际调用。报告从 provider.requested/completed 事件生成逐题 invocation，披露实际 wire_generation、SDK/bridge/lock/policy/系统 Prompt 摘要及完成状态；请求模型名不冒充 Provider 已确认身份。
 - 旧 CLI/HTTP profile 与历史运行不改写；它们不能被本地就绪检查或选择进入新运行，但仍可查看和删除。
 
@@ -164,7 +166,7 @@ SQL 同时经过静态和动态两层：
 
 禁止公开：
 
-- API Key、Authorization、Keychain 内容；
+- API Key、Authorization、Keychain 等密钥存储内容（仅历史数据可能存在）；
 - 原始 SQLite/WAL/SHM；
 - CLI Home、认证文件和 shell 环境；
 - 用户/项目绝对路径；

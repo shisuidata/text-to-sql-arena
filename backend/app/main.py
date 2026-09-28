@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -57,7 +58,7 @@ async def handle_validation_error(request: Request, error: RequestValidationErro
         content={
             "code": "request_validation_error",
             "message": "请求参数不符合契约",
-            "details": redact_secrets(error.errors()),
+            "details": redact_secrets(json.loads(json.dumps(error.errors(), default=str))),
             "request_id": request_id(request),
         },
     )

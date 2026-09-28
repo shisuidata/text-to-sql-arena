@@ -1,6 +1,6 @@
 # 第三方声明
 
-本项目依赖第三方开源软件，并随前端分发三种字体。各第三方组件仍受其各自许可证约束；项目根许可证不会替代这些许可证。
+本项目依赖第三方开源软件，并随本地工具前端分发四种字体。各第三方组件仍受其各自许可证约束；项目根许可证不会替代这些许可证。
 
 版本以 `uv.lock` 和 `frontend/pnpm-lock.yaml` 为准。下表记录本次开源审计时解析到的直接生产依赖；传递依赖及其精确版本见锁文件和安装包元数据。
 
@@ -13,7 +13,6 @@
 | DuckDB | 1.5.5 | MIT（分发包 `LICENSE`） |
 | FastAPI | 0.141.1 | MIT |
 | HTTPX | 0.28.1 | BSD-3-Clause |
-| keyring | 25.7.0 | MIT |
 | Pydantic | 2.13.5 | MIT |
 | python-multipart | 0.0.32 | Apache-2.0 |
 | PyYAML | 6.0.3 | MIT |
@@ -53,9 +52,10 @@
 
 | 字体 | 文件 | 声明 |
 | --- | --- | --- |
-| Maple Mono | `maple-mono-cn.woff2` / `OFL-Maple-Mono.txt` | Copyright 2022 The Maple Mono Project Authors |
 | Noto Sans SC | `noto-sans-sc.woff2` / `OFL-Noto-Sans-SC.txt` | SIL Open Font License 1.1；原分发许可文本随文件保留 |
-| Smiley Sans / 得意黑 | `smiley-sans.woff2` / `OFL-Smiley-Sans.txt` | Copyright 2022–2024 atelierAnchor；Reserved Font Name `Smiley`、`得意黑` |
+| Noto Serif SC | `noto-serif-sc.woff2` / `OFL-Noto-Serif-SC.txt` | SIL Open Font License 1.1；600 字重，Google Fonts 原字体转为 WOFF2 |
+| IBM Plex Sans | `ibm-plex-sans-regular.woff2`、`ibm-plex-sans-semibold.woff2` / `OFL-IBM-Plex-Sans.txt` | SIL Open Font License 1.1；400、600 字重，Google Fonts 原字体转为 WOFF2 |
+| JetBrains Mono | `jetbrains-mono.woff2` / `OFL-JetBrains-Mono.txt` | SIL Open Font License 1.1；400 字重，Google Fonts 原字体转为 WOFF2 |
 
 源目录：`frontend/public/fonts/`。生产副本：`backend/app/static/fonts/`。
 

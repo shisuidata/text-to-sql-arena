@@ -37,11 +37,43 @@ export interface ModelProfile {
   pricing: TokenPricing | null;
   enabled: boolean;
   has_secret: boolean;
-  secret_backend: "keyring" | "environment" | "none";
+  secret_backend: SecretBackend;
   health_status: HealthStatus;
   health_details: Record<string, unknown>;
   last_checked_at: string | null;
   health_expires_at: string | null;
+}
+
+export type PiAuthMode = "api_key" | "oauth";
+export type SecretBackend = "keyring" | "environment" | "pi" | "none";
+
+export interface PiCredentialEntry {
+  provider: string;
+  types: PiAuthMode[];
+}
+
+export interface PiCredentialsResponse {
+  providers: PiCredentialEntry[];
+}
+
+export interface PiCatalogModel {
+  provider: string;
+  model_id: string;
+  name: string;
+  api: string;
+  base_url: string;
+  context_window: number;
+  max_tokens: number;
+  reasoning_levels: string[];
+  auth_modes: PiAuthMode[];
+  supported: boolean;
+  unavailable_reason: string | null;
+  definition?: Record<string, unknown>;
+}
+
+export interface PiCatalogResponse {
+  version: string;
+  models: PiCatalogModel[];
 }
 
 export interface BenchmarkCase {
@@ -83,7 +115,7 @@ export interface SuiteVersion {
       foreign_keys?: StructureForeignKey[];
     }>;
     semantic_relationships?: Array<{ from_entity: string; to_entity: string; sql_on: string }>;
-  };
+  } | null;
   cases: BenchmarkCase[];
 }
 
@@ -108,8 +140,17 @@ export interface ResultPreview {
   columns?: Array<{ name: string; type: string }>;
   rows?: unknown[][];
   row_count?: number;
-  missing?: number[];
-  extra?: number[];
+  missing?: unknown[][];
+  extra?: unknown[][];
+  comparison_summary?: {
+    verdict: string;
+    expected_count: number;
+    actual_count: number;
+    matched_count: number;
+    missing_count: number;
+    extra_count: number;
+    order_mismatch: boolean;
+  };
   digest?: string;
 }
 
@@ -122,6 +163,12 @@ export interface ScoreBreakdown {
   rows?: number;
   ordering?: number;
   ast?: number;
+  read_only_ast?: number;
+  column_count?: number;
+  column_names?: number;
+  row_f1?: number;
+  sql_capability?: number;
+  ast_rules?: Array<{ id: string; kind: string; passed: boolean; details: Record<string, unknown> }>;
   [key: string]: unknown;
 }
 
@@ -270,6 +317,7 @@ export interface CaseRunDetail {
   error_code: string | null;
   error_message: string | null;
   reference_sql?: string;
+  formatted_reference_sql?: string | null;
   required_ast: unknown[];
   comparison: Record<string, unknown>;
   suite_content_hash: string;

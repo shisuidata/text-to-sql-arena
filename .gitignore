@@ -42,3 +42,6 @@ frontend/vite.config.d.ts
 *.log
 *.tmp
 *.swp
+
+# Cloudflare CLI local account and project cache
+.wrangler/

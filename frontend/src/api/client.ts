@@ -1,4 +1,4 @@
-import type { CaseRunDetail, ModelProfile, RunEvent, RunHistoryItem, RunSnapshot, Suite } from "../types";
+import type { CaseRunDetail, ModelProfile, PiCatalogResponse, PiCredentialsResponse, RunEvent, RunHistoryItem, RunSnapshot, Suite } from "../types";
 
 let csrfToken = "";
 
@@ -71,14 +71,12 @@ function eventHistoryPath(id: number, query: EventHistoryQuery): string {
 
 export const api = {
   profiles: () => request<ModelProfile[]>("/api/model-profiles"),
+  piCatalog: () => request<PiCatalogResponse>("/api/pi/catalog"),
+  piCredentials: () => request<PiCredentialsResponse>("/api/pi/credentials"),
   createProfile: (payload: Record<string, unknown>) => request<ModelProfile>("/api/model-profiles", { method: "POST", body: JSON.stringify(payload) }),
   checkProfile: (id: number) => request<ModelProfile>(`/api/model-profiles/${id}/check`, { method: "POST" }),
   deleteProfile: (id: number) => request<{ status: string }>(`/api/model-profiles/${id}`, { method: "DELETE" }),
   suites: () => request<Suite[]>("/api/suites"),
-  promptPreview: (versionId: number, caseId: number) => request<{ case_id: number; stable_key: string; prompt: string; output_schema: Record<string, unknown> }>(`/api/suite-versions/${versionId}/prompt-preview?case_id=${caseId}`),
-  cloneSuite: (suiteId: number, versionId: number) => request<{ suite_version_id: number }>(`/api/suites/${suiteId}/clone?source_version_id=${versionId}`, { method: "POST" }),
-  patchSuite: (versionId: number, payload: Record<string, unknown>) => request<{ status: string }>(`/api/suite-versions/${versionId}`, { method: "PATCH", body: JSON.stringify(payload) }),
-  publishSuite: (versionId: number) => request<{ content_hash: string }>(`/api/suite-versions/${versionId}/publish`, { method: "POST" }),
   createRun: (payload: { suite_version_id: number; model_profile_ids: number[]; case_ids: number[] | null; attempts: number }) => request<{ id: number; status: string }>("/api/runs", { method: "POST", body: JSON.stringify(payload) }),
   cancelRun: (id: number) => request<{ status: string }>(`/api/runs/${id}/cancel`, { method: "POST" }),
   rerun: (id: number) => request<{ id: number }>(`/api/runs/${id}/rerun`, { method: "POST" }),
@@ -90,30 +88,53 @@ export const api = {
 };
 
 const EVENT_TYPES = ["run.created", "run.started", "model.started", "case.started", "prompt.built", "provider.requested", "provider.delta", "provider.completed", "plan.completed", "sql.parsed", "sql.rejected", "sql.executed", "result.compared", "score.completed", "case.failed", "model.completed", "run.completed", "run.cancelled", "run.interrupted"];
+export const TERMINAL_EVENT_TYPES: Readonly<Record<string, true>> = {
+  "run.completed": true,
+  "run.cancelled": true,
+  "run.interrupted": true,
+};
 
-export function eventStream(runId: number, afterSeq: number, onEvent: (event: RunEvent) => void, onReconnect: () => void): () => void {
+export function eventStream(runId: number, afterSeq: number, onEvent: (event: RunEvent) => void, onConnectionChange: (connected: boolean) => void): () => void {
   let stopped = false;
   let source: EventSource | null = null;
+  let reconnectTimer: number | null = null;
   let retry = 800;
   const connect = () => {
     if (stopped) return;
-    source = new EventSource(`/api/runs/${runId}/events?after_seq=${afterSeq}`);
-    source.onopen = () => { retry = 800; };
+    reconnectTimer = null;
+    const current = new EventSource(`/api/runs/${runId}/events?after_seq=${afterSeq}`);
+    source = current;
+    current.onopen = () => {
+      if (stopped || source !== current) return;
+      retry = 800;
+      onConnectionChange(true);
+    };
     const receive = (message: MessageEvent<string>) => {
       const event = JSON.parse(message.data) as RunEvent;
-      afterSeq = Math.max(afterSeq, event.seq);
+      if (stopped || source !== current || event.seq <= afterSeq) return;
+      afterSeq = event.seq;
       onEvent(event);
-    };
-    for (const eventType of EVENT_TYPES) source.addEventListener(eventType, receive as EventListener);
-    source.onerror = () => {
-      source?.close();
-      if (!stopped) {
-        onReconnect();
-        window.setTimeout(connect, retry);
-        retry = Math.min(retry * 1.8, 8000);
+      if (TERMINAL_EVENT_TYPES[event.event_type]) {
+        stopped = true;
+        current.close();
+        source = null;
       }
+    };
+    for (const eventType of EVENT_TYPES) current.addEventListener(eventType, receive as EventListener);
+    current.onerror = () => {
+      if (stopped || source !== current) return;
+      current.close();
+      source = null;
+      onConnectionChange(false);
+      reconnectTimer = window.setTimeout(connect, retry);
+      retry = Math.min(retry * 1.8, 8000);
     };
   };
   connect();
-  return () => { stopped = true; source?.close(); };
+  return () => {
+    stopped = true;
+    source?.close();
+    source = null;
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+  };
 }

@@ -56,7 +56,7 @@ uv run python -m backend.app.cli serve
 - `content_hash` 覆盖所有组成部分；
 - 每个 reference query 必须在构建时成功并固化 gold result；
 - 新题库必须包含边界测试：只读性、确定性、顺序语义、重复行、NULL、时间/Decimal 或该领域等价风险；
-- 修改已发布题库时，克隆到草稿并发布新语义版本，不改旧 evidence。
+- 题库维护属于代码/离线构建流程，不提供 Web 草稿编辑或发布 API。修改维护源后生成新内容哈希并由 bootstrap 导入新版本，不改已发布版本或旧 evidence。
 
 ## 修改评分或比较器
 
