@@ -116,7 +116,7 @@ pnpm install --frozen-lockfile
 pnpm dev
 ```
 
-执行 `pnpm check && pnpm build && pnpm verify:build` 会生成公开边界内的正文与证据页面并检查内部链接。该命令只构建本地静态产物，不部署站点。
+执行 `pnpm check && pnpm build && pnpm verify:build` 会生成公开边界内的正文与证据页面、从实际生成的公开路由生成 `/sitemap-index.xml`；`/sitemap.xml` 在 Cloudflare Pages 301 重定向至该索引，`/robots.txt` 声明索引地址。构建检查 sitemap URL 与 HTML 页面一一对应（不包含 404，不虚构更新时间）及内部链接；该命令只构建本地静态产物，不部署站点。
 
 Cloudflare Pages 项目 `text-to-sql-arena-git` 使用原生 Git 集成，生产域名为 `arena.ss-data.cc`，GitHub 仓库现为 `shisuidata/text-to-sql-arena`。仓库转移后，`main` 已成功推送且 GitHub CI 通过，但 Pages 未生成新部署，线上仍为转移前的提交；组织的 GitHub App 安装列表也没有 Cloudflare。须在 GitHub 为组织仓库授权 Cloudflare Workers & Pages 应用，并在 Pages 项目的 Git 集成设置中核对或重新连接源仓库，再用新提交验证自动触发。仅手动上传站点不能修复这一链路。
 

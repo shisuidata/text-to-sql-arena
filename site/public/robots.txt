@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://arena.ss-data.cc/sitemap-index.xml
